@@ -10,7 +10,6 @@ class Database:
 
     async def init(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
-            # 1. Создаем таблицу пользователей (если ее нет)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
@@ -25,7 +24,6 @@ class Database:
                 )
             """)
 
-            # 2. Создаем таблицу вотч-листа (если ее нет)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +39,6 @@ class Database:
             """)
             await db.commit()
 
-            # 3. Гарантированная миграция существующих таблиц через PRAGMA
             async with db.execute("PRAGMA table_info(users)") as cursor:
                 existing_cols = [row[1] for row in await cursor.fetchall()]
 
