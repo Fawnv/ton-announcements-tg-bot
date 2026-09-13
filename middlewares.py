@@ -11,6 +11,7 @@ from aiogram.types import (
     InlineKeyboardButton
 )
 from database import db
+from emojis import E_LOCK, E_KEY, E_BULB
 
 class WhitelistMiddleware(BaseMiddleware):
     def __init__(
@@ -57,12 +58,12 @@ class WhitelistMiddleware(BaseMiddleware):
         )
 
         lock_text = (
-            "🔒 <b>Требуется активация по API-ключу</b>\n\n"
+            f"{E_LOCK} <b>Требуется активация по API-ключу</b>\n\n"
             "Для бесплатных пользователей отслеживание работает через ваш <b>персональный ключ TonAPI</b>, "
             "чтобы не перегружать общий лимит бота.\n\n"
-            "1. Зайдите в tonapi.io, зарегистрируйтесь и во вкладке TON API > API Keys бесплатно создайте и скопируйте ключ.\n"
+            "1. Зайдите на tonapi.io, зарегистрируйтесь и во вкладке TON API > API Keys бесплатно создайте и скопируйте ключ.\n"
             "2. Нажмите кнопку ниже и отправьте ключ боту.\n\n"
-            "<i>После этого вам сразу откроется возможность добавить 1 кошелек в наблюдение!</i>"
+            f"{E_BULB} <i>После этого вам сразу откроется возможность добавить 1 кошелек в наблюдение!</i>"
         )
 
         if isinstance(event, Message):

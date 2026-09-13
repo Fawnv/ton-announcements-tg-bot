@@ -99,6 +99,22 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tx_log_wallet ON tx_log(wallet_id, ts)")
             await db.commit()
 
+            # 7. Крипто-платежи 2328.io
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id TEXT UNIQUE NOT NULL,
+                    uuid TEXT DEFAULT '',
+                    user_id INTEGER NOT NULL,
+                    period TEXT NOT NULL,
+                    amount_usd REAL NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at INTEGER,
+                    paid_at INTEGER
+                )
+            """)
+            await db.commit()
+
     async def get_user(self, user_id: int) -> Optional[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -350,5 +366,79 @@ class Database:
                 res = await cursor.fetchone()
                 stats["custom_keys"] = res[0] if res else 0
             return stats
+
+    # --- ПОЛЬЗОВАТЕЛИ (для админки) ---
+
+    async def count_users(self) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+                res = await cursor.fetchone()
+                return res[0] if res else 0
+
+    async def get_users_page(self, page: int = 1, per_page: int = 10) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT
+                    u.user_id,
+                    u.sub_type,
+                    u.sub_until,
+                    u.fiat_currency,
+                    u.custom_api_key,
+                    (SELECT COUNT(*) FROM watchlist w WHERE w.user_id = u.user_id) AS wallets
+                FROM users u
+                ORDER BY u.user_id
+                LIMIT ? OFFSET ?
+            """, (per_page, (page - 1) * per_page)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    # --- КРИПТО-ПЛАТЕЖИ 2328.io ---
+
+    async def create_payment(self, order_id: str, user_id: int, period: str, amount_usd: float, uuid: str = "") -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute(
+                    "INSERT INTO payments (order_id, uuid, user_id, period, amount_usd, status, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                    (order_id, uuid, user_id, period, amount_usd, int(time.time()))
+                )
+                await db.commit()
+                return True
+            except Exception:
+                return False
+
+    async def get_payment_by_order(self, order_id: str) -> Optional[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM payments WHERE order_id = ?", (order_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def mark_payment_paid(self, order_id: str) -> bool:
+        """Помечает платеж оплаченным. True — только при переходе pending -> paid
+        (защита от повторной активации подписки)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "UPDATE payments SET status = 'paid', paid_at = ? WHERE order_id = ? AND status = 'pending'",
+                (int(time.time()), order_id)
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+    async def set_payment_status(self, order_id: str, status: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE payments SET status = ? WHERE order_id = ? AND status = 'pending'",
+                (status, order_id)
+            )
+            await db.commit()
+
+    async def get_pending_payments(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM payments WHERE status = 'pending'") as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
 
 db = Database()

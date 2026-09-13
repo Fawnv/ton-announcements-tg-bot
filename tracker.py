@@ -7,28 +7,15 @@ from aiogram import Bot
 
 from database import Database
 from ton_api import TonApiClient
+from emojis import (
+    E_COMMENT, E_IN, E_OUT, E_TON, E_USER, E_TIME, E_CHART, E_GREEN, E_RED,
+    E_LINK, E_NFT, E_STAKE, E_GEAR, E_SCALE, E_WATCH, E_JETTON, E_OK, E_INFO, E_WAIT
+)
 
 logger = logging.getLogger(__name__)
 
-# --- Премиум-эмодзи ---
-E_COMMENT = '<tg-emoji emoji-id="5443038326535759644">💬</tg-emoji>'
-E_IN      = '<tg-emoji emoji-id="5445355530111437729">📥</tg-emoji>'
-E_OUT     = '<tg-emoji emoji-id="5445355530111437729">📤</tg-emoji>'
-E_TON     = '<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji>'
-E_USER    = '<tg-emoji emoji-id="5258011929993026890">👤</tg-emoji>'
-E_TIME    = '<tg-emoji emoji-id="5382194935057372936">🕒</tg-emoji>'
-E_CHART   = '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>'
-E_GREEN   = '<tg-emoji emoji-id="5416081784641168838">🟢</tg-emoji>'
-E_RED     = '<tg-emoji emoji-id="5411225014148014586">🔴</tg-emoji>'
-E_LINK    = '<tg-emoji emoji-id="5271604874419647061">🔗</tg-emoji>'
-E_LOC     = '<tg-emoji emoji-id="5391032818111363540">📍</tg-emoji>'
-E_NFT     = '<tg-emoji emoji-id="5237846821763520275">🖼</tg-emoji>'
-E_STAKE   = '<tg-emoji emoji-id="5446042735909124987">🥩</tg-emoji>'
-E_GEAR    = '<tg-emoji emoji-id="5465305287370261216">⚙️</tg-emoji>'
-E_SCALE   = '<tg-emoji emoji-id="5450401490725681801">⚖️</tg-emoji>'
-
-STATUS_WAITING = "⏳ <b>Статус:</b> <i>Отправлено, проверяем зачисление на адрес получателя...</i>"
-STATUS_DELIVERED = "✅ <b>Статус:</b> <b>Средства успешно зачислены на кошелек получателя!</b>"
+STATUS_WAITING = f"{E_WAIT} <b>Статус:</b> <i>Отправлено, проверяем зачисление на адрес получателя...</i>"
+STATUS_DELIVERED = f"{E_OK} <b>Статус:</b> <b>Средства успешно зачислены на кошелек получателя!</b>"
 
 # Легаси-значения fiat_currency, сохраненные до перехода на набор валют
 _LEGACY_FIAT = {
@@ -135,7 +122,7 @@ async def watch_outgoing_delivery(
     try:
         timeout_text = base_text.replace(
             STATUS_WAITING,
-            "ℹ️ <b>Статус:</b> <i>Отправлено (проверьте получение в Tonviewer)</i>"
+            f"{E_INFO} <b>Статус:</b> <i>Отправлено (проверьте получение в Tonviewer)</i>"
         )
         await bot.edit_message_text(
             text=timeout_text,
@@ -183,7 +170,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
             diff_text = format_ton_diff(diff)
             text = (
                 f"{E_SCALE} <b>Изменение баланса без транзакций</b>\n\n"
-                f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                f"{E_WATCH} <b>Вотч-лист:</b> <code>{display_name}</code>\n"
                 f"{E_CHART} <b>Баланс:</b>\n"
                 f"  • <b>Было:</b> <code>{stored_balance:.4f} TON</code>\n"
                 f"  • <b>Стало:</b> <code>{current_balance:.4f} TON</code> ({diff_text})\n\n"
@@ -299,7 +286,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
 
                 text = (
                     f"{icon} <b>{tx_title}</b>\n\n"
-                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                    f"{E_WATCH} <b>Вотч-лист:</b> <code>{display_name}</code>\n"
                     f"{E_TON} <b>Сумма:</b> <code>{amount_ton:.4f} TON</code>{fiat_display}\n"
                     f"{E_USER} <b>{party_label}:</b> <code>{short_addr(party_addr)}</code>\n"
                 )
@@ -364,8 +351,8 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
 
                 text = (
                     f"{icon} <b>{tx_title}</b>\n\n"
-                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
-                    f"🪙 <b>Сумма:</b> <code>{amount:.4f} {symbol}</code>\n"
+                    f"{E_WATCH} <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                    f"{E_JETTON} <b>Сумма:</b> <code>{amount:.4f} {symbol}</code>\n"
                     f"{E_USER} <b>{party_label}:</b> <code>{short_addr(party_addr)}</code>\n"
                 )
                 if comment:
@@ -422,7 +409,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
 
                 text = (
                     f"{E_NFT} <b>{tx_title}</b>\n\n"
-                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                    f"{E_WATCH} <b>Вотч-лист:</b> <code>{display_name}</code>\n"
                     f"{E_NFT} <b>NFT:</b> <code>{nft_display}</code>\n"
                     f"{E_USER} <b>{party_label}:</b> <code>{short_addr(party_addr)}</code>\n"
                 )
@@ -451,7 +438,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
 
                 text = (
                     f"{E_STAKE} <b>{tx_title}</b>\n\n"
-                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                    f"{E_WATCH} <b>Вотч-лист:</b> <code>{display_name}</code>\n"
                     f"{E_TON} <b>Сумма:</b> <code>{amount_ton:.4f} TON</code>\n"
                 )
                 if staker:
@@ -478,12 +465,12 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
 
                 text = (
                     f"{E_GEAR} <b>Вызов смарт-контракта</b>\n\n"
-                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                    f"{E_WATCH} <b>Вотч-лист:</b> <code>{display_name}</code>\n"
                     f"{E_USER} <b>Инициатор:</b> <code>{short_addr(executor)}</code>\n"
                     f"{E_GEAR} <b>Контракт:</b> <code>{short_addr(contract)}</code>\n"
                 )
                 if operation:
-                    text += f"🔧 <b>Операция:</b> <code>{html.escape(str(operation))}</code>\n"
+                    text += f"{E_GEAR} <b>Операция:</b> <code>{html.escape(str(operation))}</code>\n"
                 if ton_attached > 0:
                     text += f"{E_TON} <b>Приложено:</b> <code>{ton_attached:.4f} TON</code>\n"
                 if dt_str:

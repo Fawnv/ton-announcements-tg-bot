@@ -1,8 +1,9 @@
 import html
 import time
 import hashlib
+import secrets
 from datetime import datetime
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -21,25 +22,30 @@ from aiogram.fsm.context import FSMContext
 from config import WHITELIST_USER_IDS, ADMIN_IDS
 from database import db
 from ton_api import TonApiClient
+from pay2328 import Pay2328Client
 from tracker import parse_fiat_currencies
+from emojis import (
+    E_TON, E_CHART, E_BELL, E_REJECT, E_PENCIL, E_SEARCH, E_TIME, E_LINK,
+    E_WATCH, E_DATE, E_HISTORY, E_WARN, E_PARTY, E_OK, E_INFO, E_BULB, E_KEY, E_STAR
+)
 
 router = Router()
-
-# Премиум-эмодзи для текста сообщений (HTML)
-E_TON     = '<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji>'
-E_CHART   = '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>'
-E_BELL    = '<tg-emoji emoji-id="5458603043203327669">🔔</tg-emoji>'
-E_LOC     = '<tg-emoji emoji-id="5391032818111363540">📍</tg-emoji>'
-E_REJECT  = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
-E_PENCIL  = '<tg-emoji emoji-id="5395444784611480792">✏️</tg-emoji>'
-E_SEARCH  = '<tg-emoji emoji-id="5231012545799666522">🔍</tg-emoji>'
-E_TIME    = '<tg-emoji emoji-id="5382194935057372936">🕒</tg-emoji>'
-E_LINK    = '<tg-emoji emoji-id="5271604874419647061">🔗</tg-emoji>'
 
 # Цены подписки в звездах (значения по умолчанию; переопределяются админом через БД)
 DEFAULT_STAR_PRICE_MONTH = 129
 DEFAULT_STAR_PRICE_YEAR = 999
 DEFAULT_STAR_PRICE_LIFETIME = 1499
+
+# Цены подписки в USD для оплаты криптой через 2328.io
+DEFAULT_USD_PRICE_MONTH = 2.00
+DEFAULT_USD_PRICE_YEAR = 15.00
+DEFAULT_USD_PRICE_LIFETIME = 25.00
+
+SUB_PERIODS = {
+    "month": {"days": 30, "title": "1 месяц"},
+    "year": {"days": 365, "title": "1 год"},
+    "lifetime": {"days": 0, "title": "Навсегда"},
+}
 
 
 async def get_star_prices() -> dict[str, int]:
@@ -57,6 +63,50 @@ async def get_star_prices() -> dict[str, int]:
         except (TypeError, ValueError):
             prices[key] = default
     return prices
+
+
+async def get_usd_prices() -> dict[str, float]:
+    """Цены подписок в USD (оплата криптой через 2328.io)."""
+    defaults = {
+        "month": DEFAULT_USD_PRICE_MONTH,
+        "year": DEFAULT_USD_PRICE_YEAR,
+        "lifetime": DEFAULT_USD_PRICE_LIFETIME,
+    }
+    prices = {}
+    for key, default in defaults.items():
+        raw = await db.get_setting(f"price_usd_{key}", str(default))
+        try:
+            prices[key] = float(raw)
+        except (TypeError, ValueError):
+            prices[key] = default
+    return prices
+
+
+async def activate_subscription(bot: Bot, user_id: int, period: str) -> None:
+    """Активирует подписку и отправляет пользователю подтверждение."""
+    if period not in SUB_PERIODS:
+        return
+
+    info = SUB_PERIODS[period]
+    if period == "lifetime":
+        await db.set_user_subscription(user_id, "lifetime", 0)
+        text = f"{E_PARTY} <b>Спасибо за оплату!</b>\nВам навсегда открыт <b>пожизненный безлимитный вотч-лист</b>!"
+    else:
+        sub_until = int(time.time()) + info["days"] * 86400
+        await db.set_user_subscription(user_id, period, sub_until)
+        dt_str = datetime.fromtimestamp(sub_until).strftime("%d.%m.%Y")
+        text = (
+            f"{E_PARTY} <b>Спасибо за оплату!</b>\nВам открыт безлимитный вотч-лист "
+            f"(<b>{info['title']}</b>) до <b>{dt_str}</b>.\n"
+            f"Добавляйте любые кошельки через <code>/watch адрес</code>!"
+        )
+
+    try:
+        await bot.send_message(user_id, text, parse_mode="HTML")
+    except Exception as e:
+        # Пользователь мог заблокировать бота — подписка все равно активирована
+        import logging
+        logging.getLogger(__name__).error(f"Не удалось отправить подтверждение подписки #{user_id}: {e}")
 
 
 class FormStates(StatesGroup):
@@ -107,13 +157,25 @@ def get_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_sub_keyboard(prices: dict[str, int]) -> InlineKeyboardMarkup:
+def get_sub_keyboard(prices: dict[str, int], usd_prices: dict[str, float] | None = None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"⭐ 1 месяц — {prices['month']} XTR", callback_data="buy_sub_month", style="success")],
+        [InlineKeyboardButton(text=f"⭐ 1 год — {prices['year']} XTR", callback_data="buy_sub_year", style="success")],
+        [InlineKeyboardButton(text=f"♾️ Навсегда — {prices['lifetime']} XTR", callback_data="buy_sub_lifetime", style="success")],
+    ]
+    if usd_prices is not None:
+        rows.append([InlineKeyboardButton(text=f"🪙 Оплатить криптой (USD)", callback_data="crypto_menu")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_crypto_keyboard(usd_prices: dict[str, float]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"⭐ 1 месяц — {prices['month']} XTR", callback_data="buy_sub_month")],
-            [InlineKeyboardButton(text=f"⭐ 1 год — {prices['year']} XTR", callback_data="buy_sub_year")],
-            [InlineKeyboardButton(text=f"♾️ Навсегда — {prices['lifetime']} XTR", callback_data="buy_sub_lifetime")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+            [InlineKeyboardButton(text=f"🪙 1 месяц — ${usd_prices['month']:.2f}", callback_data="buy_crypto_month", style="success")],
+            [InlineKeyboardButton(text=f"🪙 1 год — ${usd_prices['year']:.2f}", callback_data="buy_crypto_year", style="success")],
+            [InlineKeyboardButton(text=f"🪙 Навсегда — ${usd_prices['lifetime']:.2f}", callback_data="buy_crypto_lifetime", style="success")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="subscribe_menu")]
         ]
     )
 
@@ -149,7 +211,7 @@ async def cmd_cancel(message: Message, state: FSMContext):
 async def cb_activate_by_key(callback: CallbackQuery, state: FSMContext):
     await state.set_state(FormStates.waiting_for_api_key)
     await callback.message.answer(
-        "🔑 <b>Подключение персонального TonAPI ключа:</b>\n\n"
+        f"{E_KEY} <b>Подключение персонального TonAPI ключа:</b>\n\n"
         "1. Зарегистрируйтесь на сайте <a href=\"https://tonapi.io\">tonapi.io</a>\n"
         "2. Перейдите во вкладку <b>TON API > API Keys</b> и создайте бесплатный ключ.\n"
         "3. Скопируйте созданный ключ и отправьте его сюда сообщением.\n\n"
@@ -187,7 +249,7 @@ async def process_user_api_key(message: Message, state: FSMContext, ton_client: 
     await state.clear()
 
     await wait_m.edit_text(
-        "✅ <b>Ключ успешно подтвержден! Доступ разблокирован.</b>\n\n"
+        f"{E_OK} <b>Ключ успешно подтвержден! Доступ разблокирован.</b>\n\n"
         "Вам доступно бесплатное наблюдение за <b>1 кошельком</b>.\n"
         "Используйте команду <code>/watch UQ...</code> или кнопки меню ниже:",
         reply_markup=get_main_keyboard(),
@@ -206,12 +268,12 @@ async def show_main_menu(event: Message | CallbackQuery, state: FSMContext):
     user = await db.get_user(user_id)
 
     if user_id in WHITELIST_USER_IDS:
-        status_str = "⭐ Безлимитный (ВЛ)"
+        status_str = f"{E_STAR} Безлимитный (ВЛ)"
     elif user and user.get("sub_type") == "lifetime":
-        status_str = "⭐ Подписка Навсегда"
+        status_str = f"{E_STAR} Подписка Навсегда"
     elif user and user.get("sub_until", 0) > int(time.time()):
         until_dt = datetime.fromtimestamp(user.get("sub_until", 0)).strftime("%d.%m.%Y")
-        status_str = f"⭐ Подписка до {until_dt}"
+        status_str = f"{E_STAR} Подписка до {until_dt}"
     else:
         status_str = "Бесплатный (1 кошелек)"
 
@@ -220,8 +282,8 @@ async def show_main_menu(event: Message | CallbackQuery, state: FSMContext):
     text = (
         f"{E_TON} <b>Главное меню трекера TON</b>\n\n"
         f"👤 <b>Ваш статус:</b> {status_str}\n"
-        f"👀 <b>В наблюдении:</b> {count} из {limit_str}\n\n"
-        f"💡 <i>Отправьте команду /watch <code>адрес</code> чтобы начать отслеживание.</i>"
+        f"{E_WATCH} <b>В наблюдении:</b> {count} из {limit_str}\n\n"
+        f"{E_BULB} <i>Отправьте команду /watch <code>адрес</code> чтобы начать отслеживание.</i>"
     )
 
     if isinstance(event, CallbackQuery):
@@ -399,7 +461,7 @@ async def cmd_watch(message: Message, ton_client: TonApiClient):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer(
-            "ℹ️ <b>Формат команды:</b>\n<code>/watch UQ...</code>\n\nОтправьте команду вместе с TON-адресом.",
+            f"{E_INFO} <b>Формат команды:</b>\n<code>/watch UQ...</code>\n\nОтправьте команду вместе с TON-адресом.",
             parse_mode="HTML"
         )
         return
@@ -417,7 +479,7 @@ async def cb_add_wallet_btn(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer(
             f"{E_REJECT} <b>Лимит исчерпан!</b>\n"
             f"Вам доступен максимум <b>{limit}</b> кошелек в наблюдении.\n\n"
-            f"Для безлимитного вотч-листа оформите подписку за звезды ⭐",
+            f"Для безлимитного вотч-листа оформите подписку за звезды {E_STAR}",
             reply_markup=get_sub_keyboard(await get_star_prices()),
             parse_mode="HTML"
         )
@@ -452,7 +514,7 @@ async def process_add_wallet(user_id: int, address: str, message: Message, ton_c
         await message.answer(
             f"{E_REJECT} <b>Лимит исчерпан!</b>\n"
             f"Вам доступен максимум <b>{limit}</b> кошелек.\n\n"
-            f"Оформите подписку ⭐ для добавления любого числа кошельков!",
+            f"Оформите подписку {E_STAR} для добавления любого числа кошельков!",
             reply_markup=get_sub_keyboard(await get_star_prices()),
             parse_mode="HTML"
         )
@@ -478,11 +540,11 @@ async def process_add_wallet(user_id: int, address: str, message: Message, ton_c
 
     success = await db.add_to_watchlist(user_id, raw_address, address, last_event_id, balance, last_event_ts)
     if not success:
-        await wait_msg.edit_text("ℹ️ Этот кошелек уже находится в вашем списке наблюдения!", parse_mode="HTML")
+        await wait_msg.edit_text(f"{E_INFO} Этот кошелек уже находится в вашем списке наблюдения!", parse_mode="HTML")
         return
 
     await wait_msg.edit_text(
-        f"✅ Кошелек <code>{address}</code> отправлен в наблюдение\n"
+        f"{E_OK} Кошелек <code>{address}</code> отправлен в наблюдение\n"
         f"{E_CHART} <b>Текущий баланс:</b> <code>{balance:.4f} TON</code>\n\n"
         f"{E_BELL} Бот уведомит о любых транзакциях по этому адресу!",
         parse_mode="HTML"
@@ -497,7 +559,7 @@ async def show_watchlist(event: Message | CallbackQuery):
     wallets = await db.get_user_watchlist(user_id)
 
     if not wallets:
-        text = "👀 <b>Ваш вотч-лист пуст.</b>\nДобавьте кошелек командой: <code>/watch UQ...</code>"
+        text = f"{E_WATCH} <b>Ваш вотч-лист пуст.</b>\nДобавьте кошелек командой: <code>/watch UQ...</code>"
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="add_wallet_btn")]])
     else:
         text = f"{E_TON} <b>Ваш вотч-лист ({len(wallets)}):</b>\n\n"
@@ -548,12 +610,12 @@ async def cb_delete_watched_wallet(callback: CallbackQuery):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"dely_w_{wallet_id}")],
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"dely_w_{wallet_id}", style="danger")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="show_watchlist")]
         ]
     )
     await callback.message.edit_text(
-        f"⚠️ Точно удалить кошелек <code>{name}</code> из наблюдения?\n\n"
+        f"{E_WARN} Точно удалить кошелек <code>{name}</code> из наблюдения?\n\n"
         "<i>История транзакций и обороты по нему также будут удалены.</i>",
         reply_markup=kb,
         parse_mode="HTML"
@@ -600,11 +662,11 @@ async def cb_wallet_info(callback: CallbackQuery):
     added_str = datetime.fromtimestamp(added).strftime("%d.%m.%Y") if added else "—"
 
     text = (
-        f"ℹ️ <b>Информация о кошельке</b>\n\n"
-        f"👀 <b>Имя:</b> <code>{name}</code>\n"
+        f"{E_INFO} <b>Информация о кошельке</b>\n\n"
+        f"{E_WATCH} <b>Имя:</b> <code>{name}</code>\n"
         f"📍 <b>Адрес:</b> <code>{wallet['user_address']}</code>\n"
         f"{E_CHART} <b>Баланс:</b> <code>{wallet['last_balance']:.4f} TON</code>\n"
-        f"📅 <b>В наблюдении с:</b> {added_str}\n\n"
+        f"{E_DATE} <b>В наблюдении с:</b> {added_str}\n\n"
         f"📊 <b>Оборот TON</b> <i>(приход / расход)</i>:\n"
         + _fmt_turnover_row("Сегодня", turnover["today"])
         + _fmt_turnover_row("Вчера", turnover["yesterday"])
@@ -694,11 +756,11 @@ async def cb_wallet_history(callback: CallbackQuery):
 
     if not txs:
         text = (
-            f"📜 <b>История: {name}</b>\n\n"
+            f"{E_HISTORY} <b>История: {name}</b>\n\n"
             "Транзакций пока не было (или бот их еще не зафиксировал)."
         )
     else:
-        text = f"📜 <b>История: {name}</b> <i>(последние {len(txs)})</i>\n\n"
+        text = f"{E_HISTORY} <b>История: {name}</b> <i>(последние {len(txs)})</i>\n\n"
         for tx in txs:
             icon = "📥" if tx["is_in"] else "📤"
             sign = "+" if tx["is_in"] else "-"
@@ -715,20 +777,119 @@ async def cb_wallet_history(callback: CallbackQuery):
     await callback.answer()
 
 
-# --- ОПЛАТА ЗВЕЗДАМИ (TELEGRAM STARS) ---
+# --- ОПЛАТА ЗВЕЗДАМИ / КРИПТОЙ ---
 @router.callback_query(F.data == "subscribe_menu")
 async def cb_subscribe_menu(callback: CallbackQuery):
     prices = await get_star_prices()
+    usd_prices = await get_usd_prices()
     await callback.message.edit_text(
-        "⭐ <b>Тарифы подписки на вотч-лист:</b>\n\n"
-        f"• <b>1 месяц</b> — <code>{prices['month']} ⭐</code>\n"
-        f"• <b>1 год</b> — <code>{prices['year']} ⭐</code>\n"
-        f"• <b>Навсегда</b> — <code>{prices['lifetime']} ⭐</code>\n\n"
-        "<i>С подпиской снимается лимит на 1 кошелек: можно добавлять неограниченное количество адресов.</i>",
-        reply_markup=get_sub_keyboard(prices),
+        f"{E_STAR} <b>Тарифы подписки на вотч-лист:</b>\n\n"
+        f"• <b>1 месяц</b> — <code>{prices['month']} {E_STAR}</code> / <code>${usd_prices['month']:.2f}</code>\n"
+        f"• <b>1 год</b> — <code>{prices['year']} {E_STAR}</code> / <code>${usd_prices['year']:.2f}</code>\n"
+        f"• <b>Навсегда</b> — <code>{prices['lifetime']} {E_STAR}</code> / <code>${usd_prices['lifetime']:.2f}</code>\n\n"
+        f"{E_BULB} <i>С подпиской снимается лимит на 1 кошелек: можно добавлять неограниченное количество адресов.</i>\n\n"
+        f"{E_STAR} <i>Оплата звездами Telegram</i>  |  🪙 <i>криптой через 2328.io</i>",
+        reply_markup=get_sub_keyboard(prices, usd_prices),
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "crypto_menu")
+async def cb_crypto_menu(callback: CallbackQuery):
+    usd_prices = await get_usd_prices()
+    await callback.message.edit_text(
+        f"🪙 <b>Оплата криптой (2328.io)</b>\n\n"
+        f"• <b>1 месяц</b> — <code>${usd_prices['month']:.2f}</code>\n"
+        f"• <b>1 год</b> — <code>${usd_prices['year']:.2f}</code>\n"
+        f"• <b>Навсегда</b> — <code>${usd_prices['lifetime']:.2f}</code>\n\n"
+        f"{E_INFO} <i>После выбора тарифа откроется счет: оплатите любой криптовалютой "
+        f"(TON, USDT, BTC, ETH, ...). Подписка активируется автоматически.</i>",
+        reply_markup=get_crypto_keyboard(usd_prices),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("buy_crypto_"))
+async def cb_buy_crypto(callback: CallbackQuery, pay2328: Pay2328Client):
+    period = callback.data.replace("buy_crypto_", "")
+    if period not in SUB_PERIODS:
+        await callback.answer("Неизвестный тариф", show_alert=True)
+        return
+
+    if not pay2328 or not pay2328.enabled:
+        await callback.answer("🪙 Оплата криптой временно недоступна. Попробуйте оплату звездами ⭐", show_alert=True)
+        return
+
+    prices = await get_usd_prices()
+    amount = prices[period]
+    title = SUB_PERIODS[period]["title"]
+
+    order_id = f"sub_{period}_{callback.from_user.id}_{int(time.time())}_{secrets.token_hex(3)}"
+    invoice = await pay2328.create_payment(
+        amount_usd=amount,
+        order_id=order_id,
+        description=f"Подписка {title} — вотч-лист TON",
+        ttl_seconds=3600,
+    )
+    if not invoice:
+        await callback.answer("Не удалось создать счет. Попробуйте позже.", show_alert=True)
+        return
+
+    await db.create_payment(order_id, callback.from_user.id, period, amount, invoice.get("uuid", ""))
+
+    url = invoice.get("url")
+    kb_rows = []
+    if url:
+        kb_rows.append([InlineKeyboardButton(text="💳 Открыть счет", url=url, style="primary")])
+    kb_rows.append([InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"chkpay_{order_id}")])
+    kb_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="crypto_menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+    await callback.message.answer(
+        f"🪙 <b>Счет на подписку «{title}»</b>\n\n"
+        f"{E_TON} <b>К оплате:</b> <code>${amount:.2f}</code>\n"
+        f"{E_TIME} <b>Действует:</b> 60 минут\n\n"
+        f"{E_BULB} <i>Оплатите счет любой криптовалютой, затем нажмите «Проверить оплату». "
+        f"Подписка активируется автоматически.</i>",
+        reply_markup=kb,
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("chkpay_"))
+async def cb_check_payment(callback: CallbackQuery, pay2328: Pay2328Client):
+    order_id = callback.data.replace("chkpay_", "")
+    payment = await db.get_payment_by_order(order_id)
+    if not payment:
+        await callback.answer("Счет не найден", show_alert=True)
+        return
+
+    if payment["status"] == "paid":
+        await callback.answer(f"{E_PARTY} Этот счет уже оплачен!")
+        return
+
+    if not pay2328 or not pay2328.enabled:
+        await callback.answer("Платежная система недоступна", show_alert=True)
+        return
+
+    info = await pay2328.get_payment_info(order_id)
+    status = (info or {}).get("payment_status")
+
+    if status == "paid":
+        if await db.mark_payment_paid(order_id):
+            await activate_subscription(callback.bot, callback.from_user.id, payment["period"])
+            await callback.answer(f"{E_PARTY} Оплата получена! Подписка активирована.")
+        else:
+            await callback.answer("Оплата уже обработана")
+    elif status == "cancel":
+        await db.set_payment_status(order_id, "cancel")
+        await callback.answer("Счет отменен или истек. Создайте новый.", show_alert=True)
+    else:
+        await callback.answer(f"⏳ Оплата пока не поступила. Проверьте через минуту.")
 
 
 @router.callback_query(F.data == "buy_sub_month")
@@ -784,31 +945,10 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 @router.message(F.successful_payment)
 async def process_successful_payment(message: Message):
     payload = message.successful_payment.invoice_payload
-
-    if payload == "sub_month":
-        sub_until = int(time.time()) + 30 * 86400
-        await db.set_user_subscription(message.from_user.id, "month", sub_until)
-        dt_str = datetime.fromtimestamp(sub_until).strftime("%d.%m.%Y")
-        await message.answer(
-            f"🎉 <b>Спасибо за оплату!</b>\nВам открыт безлимитный вотч-лист до <b>{dt_str}</b>.\n"
-            f"Добавляйте любые кошельки через <code>/watch адрес</code>!",
-            parse_mode="HTML"
-        )
-    elif payload == "sub_year":
-        sub_until = int(time.time()) + 365 * 86400
-        await db.set_user_subscription(message.from_user.id, "year", sub_until)
-        dt_str = datetime.fromtimestamp(sub_until).strftime("%d.%m.%Y")
-        await message.answer(
-            f"🎉 <b>Спасибо за оплату!</b>\nВам открыт <b>годовой</b> безлимитный вотч-лист до <b>{dt_str}</b>.\n"
-            f"Добавляйте любые кошельки через <code>/watch адрес</code>!",
-            parse_mode="HTML"
-        )
-    elif payload == "sub_lifetime":
-        await db.set_user_subscription(message.from_user.id, "lifetime", 0)
-        await message.answer(
-            "🎉 <b>Спасибо за оплату!</b>\nВам навсегда открыт <b>пожизненный безлимитный вотч-лист</b>!",
-            parse_mode="HTML"
-        )
+    period = payload.replace("sub_", "")
+    if period not in SUB_PERIODS:
+        return
+    await activate_subscription(message.bot, message.from_user.id, period)
 
 
 # --- ИНЛАЙН-РЕЖИМ (@tonancbot адрес) ---
@@ -865,7 +1005,7 @@ async def inline_query_handler(inline_query: InlineQuery, ton_client: TonApiClie
                 title="⏳ Введите адрес или домен .ton",
                 description="Поддерживаются: UQ..., EQ..., а также домены (например, wallet.ton)",
                 input_message_content=InputTextMessageContent(
-                    message_text="💡 Введите полный адрес (UQ... / EQ...) или домен (например, <code>wallet.ton</code>).",
+                    message_text=f"{E_BULB} Введите полный адрес (UQ... / EQ...) или домен (например, <code>wallet.ton</code>).",
                     parse_mode="HTML"
                 )
             )

@@ -1,7 +1,10 @@
 import asyncio
 import logging
+import os
 import time
+from datetime import datetime
 
+from dotenv import dotenv_values, set_key
 from aiogram import Router, F
 from aiogram.filters import Command, BaseFilter
 from aiogram.types import (
@@ -15,6 +18,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_IDS
 from database import db
+from emojis import E_CHART, E_TIME, E_OK, E_INFO, E_BULB, E_WARN, E_STAR, E_KEY, E_LOC
 import ota
 
 logger = logging.getLogger(__name__)
@@ -22,6 +26,20 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 BOT_STARTED_AT = time.time()
+
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+# Редактируемые из бота ключи .env (BOT_TOKEN намеренно исключен —
+# его смена из работающего бота убьет текущую сессию).
+ENV_KEYS = [
+    ("TONAPI_KEY", "TonAPI мастер-ключ", True),
+    ("CHECK_INTERVAL", "Интервал проверки (сек)", False),
+    ("WHITELIST_USER_IDS", "Whitelist ID (через запятую)", False),
+    ("ADMIN_IDS", "ID админов (через запятую)", False),
+    ("PAY2328_PROJECT", "2328 Project UUID", True),
+    ("PAY2328_API_KEY", "2328 API-ключ", True),
+    ("PAY2328_CALLBACK_URL", "2328 Callback URL", False),
+]
 
 
 class AdminFilter(BaseFilter):
@@ -36,6 +54,7 @@ router.callback_query.filter(AdminFilter())
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
     waiting_price = State()
+    waiting_env_value = State()
 
 
 # --- КЛАВИАТУРЫ ---
@@ -43,10 +62,15 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users")],
             [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="🔄 Проверить обновления", callback_data="admin_check_update")],
-            [InlineKeyboardButton(text="⚙️ Цены подписок", callback_data="admin_prices")],
-            [InlineKeyboardButton(text="🔁 Перезапустить бота", callback_data="admin_restart")],
+            [
+                InlineKeyboardButton(text="⚙️ Цены ⭐", callback_data="admin_prices"),
+                InlineKeyboardButton(text="🪙 Цены USD", callback_data="admin_prices_usd")
+            ],
+            [InlineKeyboardButton(text="🧩 Настройки (.env)", callback_data="admin_env")],
+            [InlineKeyboardButton(text="🔁 Перезапустить бота", callback_data="admin_restart", style="danger")],
             [InlineKeyboardButton(text="🔙 В главное меню", callback_data="back_to_main")]
         ]
     )
@@ -70,9 +94,11 @@ async def show_admin_panel(event: Message | CallbackQuery):
     text = (
         "🛠 <b>Панель администратора</b>\n\n"
         "• <b>Статистика</b> — пользователи, вотч-лист, подписки\n"
+        "• <b>Пользователи</b> — список с подписками и лимитами\n"
         "• <b>Рассылка</b> — сообщение всем пользователям бота\n"
         "• <b>Проверить обновления</b> — OTA: новые коммиты с GitHub\n"
-        "• <b>Цены подписок</b> — редактирование тарифов в звездах\n"
+        "• <b>Цены</b> — тарифы в звездах и USD\n"
+        "• <b>Настройки (.env)</b> — переменные окружения без SSH\n"
         "• <b>Перезапуск</b> — рестарт процесса бота"
     )
     if isinstance(event, CallbackQuery):
@@ -99,13 +125,13 @@ async def cb_admin_stats(callback: CallbackQuery):
     commit = await ota.get_current_commit()
 
     text = (
-        f"📊 <b>Статистика бота</b>\n\n"
+        f"{E_CHART} <b>Статистика бота</b>\n\n"
         f"👤 <b>Пользователей:</b> <code>{stats['users']}</code>\n"
         f"👀 <b>Кошельков в наблюдении:</b> <code>{stats['wallets']}</code>\n"
-        f"⭐ <b>Активных подписок:</b> <code>{stats['active_subs']}</code>\n"
-        f"🔑 <b>Своих TonAPI-ключей:</b> <code>{stats['custom_keys']}</code>\n\n"
+        f"{E_STAR} <b>Активных подписок:</b> <code>{stats['active_subs']}</code>\n"
+        f"{E_KEY} <b>Своих TonAPI-ключей:</b> <code>{stats['custom_keys']}</code>\n\n"
         f"🧬 <b>Версия:</b> <code>{commit}</code>\n"
-        f"🕒 <b>Аптайм:</b> <code>{format_uptime()}</code>"
+        f"{E_TIME} <b>Аптайм:</b> <code>{format_uptime()}</code>"
     )
     await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -141,7 +167,7 @@ async def process_broadcast_message(message: Message, state: FSMContext):
     await state.update_data(broadcast_text=text)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Начать рассылку", callback_data="admin_broadcast_send")],
+            [InlineKeyboardButton(text="✅ Начать рассылку", callback_data="admin_broadcast_send", style="success")],
             [InlineKeyboardButton(text="✏️ Изменить текст", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_broadcast_cancel")]
         ]
@@ -173,7 +199,7 @@ async def cb_broadcast_send(callback: CallbackQuery, state: FSMContext):
 
     user_ids = await db.get_all_user_ids()
     if not user_ids:
-        await callback.message.edit_text("ℹ️ Пользователей в базе нет.", reply_markup=get_admin_keyboard())
+        await callback.message.edit_text(f"{E_INFO} Пользователей в базе нет.", reply_markup=get_admin_keyboard())
         await callback.answer()
         return
 
@@ -192,7 +218,7 @@ async def cb_broadcast_send(callback: CallbackQuery, state: FSMContext):
         await asyncio.sleep(0.05)
 
     await callback.message.edit_text(
-        f"✅ <b>Рассылка завершена</b>\n\n"
+        f"{E_OK} <b>Рассылка завершена</b>\n\n"
         f"📬 Доставлено: <code>{ok}</code>\n"
         f"⛔ Ошибок: <code>{fail}</code>",
         reply_markup=get_admin_keyboard(),
@@ -276,34 +302,22 @@ async def cb_restart(callback: CallbackQuery):
 
 # --- ЦЕНЫ ПОДПИСОК ---
 PRICE_SETTINGS = {
-    "month": ("price_month", "1 месяц"),
-    "year": ("price_year", "1 год"),
-    "lifetime": ("price_lifetime", "Навсегда"),
+    "month": "1 месяц",
+    "year": "1 год",
+    "lifetime": "Навсегда",
 }
-
-DEFAULT_PRICES = {"month": 129, "year": 999, "lifetime": 1499}
-
-
-async def get_admin_prices() -> dict[str, int]:
-    prices = {}
-    for key, default in DEFAULT_PRICES.items():
-        raw = await db.get_setting(f"price_{key}", str(default))
-        try:
-            prices[key] = int(float(raw))
-        except (TypeError, ValueError):
-            prices[key] = default
-    return prices
 
 
 @router.callback_query(F.data == "admin_prices")
 async def cb_admin_prices(callback: CallbackQuery):
-    prices = await get_admin_prices()
+    from handlers import get_star_prices
+    prices = await get_star_prices()
     text = (
-        "⚙️ <b>Цены подписок (в звездах ⭐)</b>\n\n"
+        f"{E_STAR} <b>Цены подписок (в звездах)</b>\n\n"
         f"• <b>1 месяц:</b> <code>{prices['month']} XTR</code>\n"
         f"• <b>1 год:</b> <code>{prices['year']} XTR</code>\n"
         f"• <b>Навсегда:</b> <code>{prices['lifetime']} XTR</code>\n\n"
-        "Нажмите на тариф, чтобы изменить его цену."
+        f"{E_BULB} Нажмите на тариф, чтобы изменить его цену."
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -317,6 +331,48 @@ async def cb_admin_prices(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data == "admin_prices_usd")
+async def cb_admin_prices_usd(callback: CallbackQuery):
+    from handlers import get_usd_prices
+    prices = await get_usd_prices()
+    text = (
+        f"🪙 <b>Цены подписок в USD (оплата криптой через 2328.io)</b>\n\n"
+        f"• <b>1 месяц:</b> <code>${prices['month']:.2f}</code>\n"
+        f"• <b>1 год:</b> <code>${prices['year']:.2f}</code>\n"
+        f"• <b>Навсегда:</b> <code>${prices['lifetime']:.2f}</code>\n\n"
+        f"{E_BULB} Нажмите на тариф, чтобы изменить его цену."
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"💰 Месяц: ${prices['month']:.2f}", callback_data="admin_priceusd_month")],
+            [InlineKeyboardButton(text=f"💰 Год: ${prices['year']:.2f}", callback_data="admin_priceusd_year")],
+            [InlineKeyboardButton(text=f"💰 Навсегда: ${prices['lifetime']:.2f}", callback_data="admin_priceusd_lifetime")],
+            [InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")]
+        ]
+    )
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_priceusd_"))
+async def cb_set_price_usd(callback: CallbackQuery, state: FSMContext):
+    period = callback.data.replace("admin_priceusd_", "")
+    if period not in PRICE_SETTINGS:
+        await callback.answer("Неизвестный тариф", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_price)
+    await state.update_data(price_key=f"usd_{period}")
+
+    await callback.message.answer(
+        f"✏️ Введите новую цену тарифа <b>{PRICE_SETTINGS[period]}</b> в USD "
+        f"(например: <code>2.50</code>):\n\n"
+        "<i>Для отмены отправьте /cancel</i>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("admin_price_"))
 async def cb_set_price(callback: CallbackQuery, state: FSMContext):
     period = callback.data.replace("admin_price_", "")
@@ -324,12 +380,11 @@ async def cb_set_price(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Неизвестный тариф", show_alert=True)
         return
 
-    _, label = PRICE_SETTINGS[period]
     await state.set_state(AdminStates.waiting_price)
-    await state.update_data(price_period=period)
+    await state.update_data(price_key=period)
 
     await callback.message.answer(
-        f"✏️ Введите новую цену тарифа <b>{label}</b> в звездах "
+        f"✏️ Введите новую цену тарифа <b>{PRICE_SETTINGS[period]}</b> в звездах "
         f"(целое число, например: <code>199</code>):\n\n"
         "<i>Для отмены отправьте /cancel</i>",
         parse_mode="HTML"
@@ -345,27 +400,210 @@ async def cancel_price(message: Message, state: FSMContext):
 
 @router.message(AdminStates.waiting_price)
 async def process_price(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Цена должна быть числом. Отправьте текстом или /cancel.")
+        return
+
     data = await state.get_data()
-    period = data.get("price_period")
-    if period not in PRICE_SETTINGS:
+    price_key = data.get("price_key")
+    if not price_key:
         await state.clear()
         await message.answer("❌ Ошибка состояния, попробуйте заново.", reply_markup=get_admin_keyboard())
         return
 
+    is_usd = price_key.startswith("usd_")
+    label = PRICE_SETTINGS.get(price_key.replace("usd_", "", 1) if is_usd else price_key, price_key)
+    raw = message.text.strip().replace(",", ".")
+
     try:
-        val = int(message.text.strip())
-        if val <= 0:
-            raise ValueError
+        if is_usd:
+            val = float(raw)
+            if val <= 0:
+                raise ValueError
+        else:
+            val = int(float(raw))
+            if val <= 0:
+                raise ValueError
     except (TypeError, ValueError):
-        await message.answer("❌ Введите целое положительное число (например: <code>199</code>):", parse_mode="HTML")
+        kind = "положительное число (например: 2.50)" if is_usd else "целое положительное число (например: 199)"
+        await message.answer(f"❌ Введите {kind}:", parse_mode="HTML")
         return
 
-    await db.set_setting(f"price_{period}", str(val))
+    await db.set_setting(f"price_{price_key}", str(val))
     await state.clear()
 
-    _, label = PRICE_SETTINGS[period]
+    unit = "USD" if is_usd else "⭐"
     await message.answer(
-        f"✅ Цена тарифа <b>{label}</b> обновлена: <code>{val} ⭐</code>",
+        f"{E_OK} Цена тарифа <b>{label}</b> обновлена: <code>{val} {unit}</code>",
         reply_markup=get_admin_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+# --- ПОЛЬЗОВАТЕЛИ ---
+@router.callback_query(F.data.startswith("admin_users"))
+async def cb_admin_users(callback: CallbackQuery):
+    raw = callback.data.replace("admin_users", "").replace("_", "")
+    try:
+        page = max(1, int(raw)) if raw else 1
+    except ValueError:
+        page = 1
+
+    per_page = 10
+    total = await db.count_users()
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, pages)
+
+    users = await db.get_users_page(page, per_page)
+    now = int(time.time())
+
+    text = f"👥 <b>Пользователи</b> <i>(стр. {page}/{pages}, всего {total})</i>\n\n"
+    for u in users:
+        if u.get("sub_type") == "lifetime":
+            status = f"{E_STAR} навсегда"
+        elif u.get("sub_until", 0) > now:
+            dt = datetime.fromtimestamp(u["sub_until"]).strftime("%d.%m.%y")
+            status = f"{E_STAR} до {dt}"
+        else:
+            status = "бесплатный"
+        key_mark = f", {E_KEY} свой ключ" if u.get("custom_api_key") else ""
+        text += (
+            f"👤 <code>{u['user_id']}</code> — {status}{key_mark}\n"
+            f"   👀 кошельков: <code>{u['wallets']}</code>\n"
+        )
+
+    rows = []
+    if page > 1:
+        rows.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_users_{page - 1}"))
+    if page < pages:
+        rows.append(InlineKeyboardButton(text="➡️ Вперед", callback_data=f"admin_users_{page + 1}"))
+    kb_rows = [rows] if rows else []
+    kb_rows.append([InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+# --- РЕДАКТОР .ENV ---
+def _mask(value: str) -> str:
+    if len(value) <= 4:
+        return "••••"
+    return value[:3] + "•••" + value[-2:]
+
+
+def _read_env() -> dict[str, str]:
+    if not os.path.isfile(ENV_PATH):
+        return {}
+    return {k: v for k, v in dotenv_values(ENV_PATH).items() if v is not None}
+
+
+def _get_env_display(key: str, masked: bool) -> str:
+    value = _read_env().get(key) or os.getenv(key, "")
+    if not value:
+        return "<i>(не задано)</i>"
+    return f"<code>{_mask(value)}</code>" if masked else f"<code>{value}</code>"
+
+
+@router.callback_query(F.data == "admin_env")
+async def cb_admin_env(callback: CallbackQuery):
+    text = f"🧩 <b>Настройки бота (.env)</b>\n\n"
+    rows = []
+    for idx, (key, label, masked) in enumerate(ENV_KEYS):
+        text += f"• <b>{label}</b>: {_get_env_display(key, masked)}\n"
+        rows.append([InlineKeyboardButton(text=f"✏️ {label}", callback_data=f"admin_env_set_{idx}")])
+    text += (
+        f"\n{E_WARN} <i>Изменения применяются после перезапуска бота.</i>\n"
+        f"{E_LOC} Файл: <code>.env</code>"
+    )
+    rows.append([InlineKeyboardButton(text="🔁 Перезапустить", callback_data="admin_restart", style="danger")])
+    rows.append([InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_env_set_"))
+async def cb_admin_env_set(callback: CallbackQuery, state: FSMContext):
+    try:
+        idx = int(callback.data.replace("admin_env_set_", ""))
+        key, label, masked = ENV_KEYS[idx]
+    except (ValueError, IndexError):
+        await callback.answer("Неизвестная настройка", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_env_value)
+    await state.update_data(env_key=key, env_masked=masked)
+
+    await callback.message.answer(
+        f"✏️ Введите новое значение для <b>{label}</b> (<code>{key}</code>):\n\n"
+        f"{E_INFO} Текущее: {_get_env_display(key, masked)}\n"
+        "<i>Для отмены отправьте /cancel. Пустое значение не сохранится.</i>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_env_value, Command("cancel"))
+async def cancel_env_value(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Изменение настройки отменено.", reply_markup=get_admin_keyboard())
+
+
+@router.message(AdminStates.waiting_env_value)
+async def process_env_value(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Значение должно быть текстом. Отправьте текстом или /cancel.")
+        return
+
+    data = await state.get_data()
+    key = data.get("env_key")
+    await state.clear()
+
+    if not key or key not in [k for k, _, _ in ENV_KEYS]:
+        await message.answer("❌ Ошибка состояния, попробуйте заново.", reply_markup=get_admin_keyboard())
+        return
+
+    value = message.text.strip()
+    if not value:
+        await message.answer("❌ Пустое значение не сохранено.", reply_markup=get_admin_keyboard())
+        return
+
+    if key == "CHECK_INTERVAL":
+        try:
+            if int(value) <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Интервал должен быть целым положительным числом (секунды).", parse_mode="HTML")
+            return
+    elif key in ("WHITELIST_USER_IDS", "ADMIN_IDS"):
+        if not all(p.strip().isdigit() for p in value.split(",") if p.strip()):
+            await message.answer("❌ Ожидается список числовых ID через запятую (например: 123, 456).", parse_mode="HTML")
+            return
+
+    try:
+        set_key(ENV_PATH, key, value)
+    except Exception as e:
+        logger.error(f"Ошибка записи {key} в .env: {e}")
+        await message.answer(f"❌ Не удалось записать <code>{key}</code> в .env: {e}", parse_mode="HTML")
+        return
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Перезапустить сейчас", callback_data="admin_restart", style="danger")],
+            [InlineKeyboardButton(text="🧩 К настройкам", callback_data="admin_env")]
+        ]
+    )
+    await message.answer(
+        f"{E_OK} <code>{key}</code> сохранен в .env.\n"
+        f"{E_WARN} <i>Изменение вступит в силу после перезапуска бота.</i>",
+        reply_markup=kb,
         parse_mode="HTML"
     )

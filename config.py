@@ -26,3 +26,10 @@ ADMIN_IDS: set[int] = {
 }
 
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "20"))
+
+# 2328.io — крипто-платежка для подписок (https://2328.io/api)
+PAY2328_PROJECT = os.getenv("PAY2328_PROJECT", "").strip() or None
+PAY2328_API_KEY = os.getenv("PAY2328_API_KEY", "").strip() or None
+# API требует публичный url_callback; бот работает через поллинг /v1/payment/info,
+# поэтому сюда можно указать любой валидный публичный URL.
+PAY2328_CALLBACK_URL = os.getenv("PAY2328_CALLBACK_URL", "https://2328.io/").strip()
