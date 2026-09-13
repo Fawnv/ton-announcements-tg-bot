@@ -3,11 +3,12 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from config import BOT_TOKEN, WHITELIST_USER_IDS, TONAPI_KEY, CHECK_INTERVAL
+from config import BOT_TOKEN, WHITELIST_USER_IDS, ADMIN_IDS, TONAPI_KEY, CHECK_INTERVAL
 from database import db
 from ton_api import TonApiClient
 from middlewares import WhitelistMiddleware
 from handlers import router
+from admin import router as admin_router
 from tracker import start_tx_tracker
 
 logging.basicConfig(
@@ -26,12 +27,13 @@ async def main():
     dp["ton_client"] = ton_client
 
     # Защита сообщений, кнопок и инлайн-запросов
-    whitelist_mw = WhitelistMiddleware(whitelist=WHITELIST_USER_IDS)
+    whitelist_mw = WhitelistMiddleware(whitelist=WHITELIST_USER_IDS, admins=ADMIN_IDS)
     dp.message.outer_middleware(whitelist_mw)
     dp.callback_query.outer_middleware(whitelist_mw)
     dp.inline_query.outer_middleware(whitelist_mw)
 
     dp.include_router(router)
+    dp.include_router(admin_router)
 
     tracker_task = asyncio.create_task(
         start_tx_tracker(bot, db, ton_client, interval=CHECK_INTERVAL)

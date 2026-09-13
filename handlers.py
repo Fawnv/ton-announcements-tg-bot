@@ -18,7 +18,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from config import WHITELIST_USER_IDS
+from config import WHITELIST_USER_IDS, ADMIN_IDS
 from database import db
 from ton_api import TonApiClient
 
@@ -35,10 +35,27 @@ E_SEARCH  = '<tg-emoji emoji-id="5231012545799666522">🔍</tg-emoji>'
 E_TIME    = '<tg-emoji emoji-id="5382194935057372936">🕒</tg-emoji>'
 E_LINK    = '<tg-emoji emoji-id="5271604874419647061">🔗</tg-emoji>'
 
-# Цены подписки в звездах
-STAR_PRICE_MONTH = 129
-STAR_PRICE_YEAR = 999
-STAR_PRICE_LIFETIME = 1499
+# Цены подписки в звездах (значения по умолчанию; переопределяются админом через БД)
+DEFAULT_STAR_PRICE_MONTH = 129
+DEFAULT_STAR_PRICE_YEAR = 999
+DEFAULT_STAR_PRICE_LIFETIME = 1499
+
+
+async def get_star_prices() -> dict[str, int]:
+    """Возвращает актуальные цены подписок (админ может менять их через панель)."""
+    defaults = {
+        "month": DEFAULT_STAR_PRICE_MONTH,
+        "year": DEFAULT_STAR_PRICE_YEAR,
+        "lifetime": DEFAULT_STAR_PRICE_LIFETIME,
+    }
+    prices = {}
+    for key, default in defaults.items():
+        raw = await db.get_setting(f"price_{key}", str(default))
+        try:
+            prices[key] = int(float(raw))
+        except (TypeError, ValueError):
+            prices[key] = default
+    return prices
 
 
 class FormStates(StatesGroup):
@@ -73,27 +90,27 @@ async def get_user_wallet_limit(user_id: int) -> int:
 
 
 # --- КЛАВИАТУРЫ ---
-def get_main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="👀 Мой вотч-лист", callback_data="show_watchlist")],
-            [InlineKeyboardButton(text="➕ Добавить кошелек", callback_data="add_wallet_btn")],
-            [
-                InlineKeyboardButton(text="⚙️ Валюта", callback_data="settings_fiat"),
-		InlineKeyboardButton(text="🎯 Фильтры", callback_data="settings_filters")
-            ],
-               [InlineKeyboardButton(text="⭐ Подписка", callback_data="subscribe_menu")]
-            
-        ]
-    )
+def get_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="👀 Мой вотч-лист", callback_data="show_watchlist")],
+        [InlineKeyboardButton(text="➕ Добавить кошелек", callback_data="add_wallet_btn")],
+        [
+            InlineKeyboardButton(text="⚙️ Валюта", callback_data="settings_fiat"),
+            InlineKeyboardButton(text="🎯 Фильтры", callback_data="settings_filters")
+        ],
+        [InlineKeyboardButton(text="⭐ Подписка", callback_data="subscribe_menu")]
+    ]
+    if is_admin:
+        rows.append([InlineKeyboardButton(text="🛠 Админка", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_sub_keyboard() -> InlineKeyboardMarkup:
+def get_sub_keyboard(prices: dict[str, int]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"⭐ 1 месяц — {STAR_PRICE_MONTH} XTR", callback_data="buy_sub_month")],
-            [InlineKeyboardButton(text=f"⭐ 1 год — {STAR_PRICE_YEAR} XTR", callback_data="buy_sub_year")],
-            [InlineKeyboardButton(text=f"♾️ Навсегда — {STAR_PRICE_LIFETIME} XTR", callback_data="buy_sub_lifetime")],
+            [InlineKeyboardButton(text=f"⭐ 1 месяц — {prices['month']} XTR", callback_data="buy_sub_month")],
+            [InlineKeyboardButton(text=f"⭐ 1 год — {prices['year']} XTR", callback_data="buy_sub_year")],
+            [InlineKeyboardButton(text=f"♾️ Навсегда — {prices['lifetime']} XTR", callback_data="buy_sub_lifetime")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
         ]
     )
@@ -174,6 +191,7 @@ async def process_user_api_key(message: Message, state: FSMContext, ton_client: 
 async def show_main_menu(event: Message | CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = event.from_user.id
+    is_admin = user_id in ADMIN_IDS
 
     limit = await get_user_wallet_limit(user_id)
     count = await db.count_user_wallets(user_id)
@@ -199,10 +217,10 @@ async def show_main_menu(event: Message | CallbackQuery, state: FSMContext):
     )
 
     if isinstance(event, CallbackQuery):
-        await event.message.edit_text(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await event.message.edit_text(text, reply_markup=get_main_keyboard(is_admin), parse_mode="HTML")
         await event.answer()
     else:
-        await event.answer(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await event.answer(text, reply_markup=get_main_keyboard(is_admin), parse_mode="HTML")
 
 
 @router.message(CommandStart())
@@ -358,7 +376,7 @@ async def cb_add_wallet_btn(callback: CallbackQuery, state: FSMContext):
             f"{E_REJECT} <b>Лимит исчерпан!</b>\n"
             f"Вам доступен максимум <b>{limit}</b> кошелек в наблюдении.\n\n"
             f"Для безлимитного вотч-листа оформите подписку за звезды ⭐",
-            reply_markup=get_sub_keyboard(),
+            reply_markup=get_sub_keyboard(await get_star_prices()),
             parse_mode="HTML"
         )
         await callback.answer()
@@ -389,7 +407,7 @@ async def process_add_wallet(user_id: int, address: str, message: Message, ton_c
             f"{E_REJECT} <b>Лимит исчерпан!</b>\n"
             f"Вам доступен максимум <b>{limit}</b> кошелек.\n\n"
             f"Оформите подписку ⭐ для добавления любого числа кошельков!",
-            reply_markup=get_sub_keyboard(),
+            reply_markup=get_sub_keyboard(await get_star_prices()),
             parse_mode="HTML"
         )
         return
@@ -464,13 +482,14 @@ async def cb_delete_watched_wallet(callback: CallbackQuery):
 # --- ОПЛАТА ЗВЕЗДАМИ (TELEGRAM STARS) ---
 @router.callback_query(F.data == "subscribe_menu")
 async def cb_subscribe_menu(callback: CallbackQuery):
+    prices = await get_star_prices()
     await callback.message.edit_text(
         "⭐ <b>Тарифы подписки на вотч-лист:</b>\n\n"
-        f"• <b>1 месяц</b> — <code>{STAR_PRICE_MONTH} ⭐</code>\n"
-        f"• <b>1 год</b> — <code>{STAR_PRICE_YEAR} ⭐</code>\n"
-        f"• <b>Навсегда</b> — <code>{STAR_PRICE_LIFETIME} ⭐</code>\n\n"
+        f"• <b>1 месяц</b> — <code>{prices['month']} ⭐</code>\n"
+        f"• <b>1 год</b> — <code>{prices['year']} ⭐</code>\n"
+        f"• <b>Навсегда</b> — <code>{prices['lifetime']} ⭐</code>\n\n"
         "<i>С подпиской снимается лимит на 1 кошелек: можно добавлять неограниченное количество адресов.</i>",
-        reply_markup=get_sub_keyboard(),
+        reply_markup=get_sub_keyboard(prices),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -478,13 +497,14 @@ async def cb_subscribe_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data == "buy_sub_month")
 async def cb_buy_sub_month(callback: CallbackQuery):
+    prices = await get_star_prices()
     await callback.bot.send_invoice(
         chat_id=callback.from_user.id,
         title="Подписка на 1 месяц",
         description="Безлимитный вотч-лист кошельков TON на 30 дней",
-        payload="sub_month_129",
+        payload="sub_month",
         currency="XTR",
-        prices=[LabeledPrice(label="1 месяц", amount=STAR_PRICE_MONTH)],
+        prices=[LabeledPrice(label="1 месяц", amount=prices["month"])],
         provider_token=""
     )
     await callback.answer()
@@ -492,13 +512,14 @@ async def cb_buy_sub_month(callback: CallbackQuery):
 
 @router.callback_query(F.data == "buy_sub_year")
 async def cb_buy_sub_year(callback: CallbackQuery):
+    prices = await get_star_prices()
     await callback.bot.send_invoice(
         chat_id=callback.from_user.id,
         title="Подписка на 1 год",
         description="Безлимитный вотч-лист кошельков TON на 365 дней",
-        payload="sub_year_999",
+        payload="sub_year",
         currency="XTR",
-        prices=[LabeledPrice(label="1 год", amount=STAR_PRICE_YEAR)],
+        prices=[LabeledPrice(label="1 год", amount=prices["year"])],
         provider_token=""
     )
     await callback.answer()
@@ -506,13 +527,14 @@ async def cb_buy_sub_year(callback: CallbackQuery):
 
 @router.callback_query(F.data == "buy_sub_lifetime")
 async def cb_buy_sub_lifetime(callback: CallbackQuery):
+    prices = await get_star_prices()
     await callback.bot.send_invoice(
         chat_id=callback.from_user.id,
         title="Подписка Навсегда",
         description="Пожизненный безлимитный вотч-лист кошельков TON",
-        payload="sub_lifetime_1499",
+        payload="sub_lifetime",
         currency="XTR",
-        prices=[LabeledPrice(label="Навсегда", amount=STAR_PRICE_LIFETIME)],
+        prices=[LabeledPrice(label="Навсегда", amount=prices["lifetime"])],
         provider_token=""
     )
     await callback.answer()
@@ -527,7 +549,7 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 async def process_successful_payment(message: Message):
     payload = message.successful_payment.invoice_payload
 
-    if payload == "sub_month_129":
+    if payload == "sub_month":
         sub_until = int(time.time()) + 30 * 86400
         await db.set_user_subscription(message.from_user.id, "month", sub_until)
         dt_str = datetime.fromtimestamp(sub_until).strftime("%d.%m.%Y")
@@ -536,7 +558,7 @@ async def process_successful_payment(message: Message):
             f"Добавляйте любые кошельки через <code>/watch адрес</code>!",
             parse_mode="HTML"
         )
-    elif payload == "sub_year_999":
+    elif payload == "sub_year":
         sub_until = int(time.time()) + 365 * 86400
         await db.set_user_subscription(message.from_user.id, "year", sub_until)
         dt_str = datetime.fromtimestamp(sub_until).strftime("%d.%m.%Y")
@@ -545,7 +567,7 @@ async def process_successful_payment(message: Message):
             f"Добавляйте любые кошельки через <code>/watch адрес</code>!",
             parse_mode="HTML"
         )
-    elif payload == "sub_lifetime_1499":
+    elif payload == "sub_lifetime":
         await db.set_user_subscription(message.from_user.id, "lifetime", 0)
         await message.answer(
             "🎉 <b>Спасибо за оплату!</b>\nВам навсегда открыт <b>пожизненный безлимитный вотч-лист</b>!",

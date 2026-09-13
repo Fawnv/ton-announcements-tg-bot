@@ -71,6 +71,15 @@ class Database:
                     await db.execute(f"ALTER TABLE watchlist ADD COLUMN {col_name} {col_type}")
                     await db.commit()
 
+            # 5. Таблица настроек бота (редактируются админами)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            await db.commit()
+
     async def get_user(self, user_id: int) -> Optional[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -199,5 +208,50 @@ class Database:
                 (last_event_id, last_balance, last_event_ts, wallet_id)
             )
             await db.commit()
+
+    # --- НАСТРОЙКИ БОТА (админские) ---
+
+    async def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else default
+
+    async def set_setting(self, key: str, value: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value)
+            )
+            await db.commit()
+
+    async def get_all_user_ids(self) -> list[int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT user_id FROM users") as cursor:
+                rows = await cursor.fetchall()
+                return [r[0] for r in rows]
+
+    async def get_stats(self) -> dict[str, int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            stats = {}
+            async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+                res = await cursor.fetchone()
+                stats["users"] = res[0] if res else 0
+            async with db.execute("SELECT COUNT(*) FROM watchlist") as cursor:
+                res = await cursor.fetchone()
+                stats["wallets"] = res[0] if res else 0
+            async with db.execute(
+                "SELECT COUNT(*) FROM users WHERE sub_type = 'lifetime' OR sub_until > ?",
+                (int(time.time()),)
+            ) as cursor:
+                res = await cursor.fetchone()
+                stats["active_subs"] = res[0] if res else 0
+            async with db.execute(
+                "SELECT COUNT(*) FROM users WHERE custom_api_key IS NOT NULL AND custom_api_key != ''"
+            ) as cursor:
+                res = await cursor.fetchone()
+                stats["custom_keys"] = res[0] if res else 0
+            return stats
 
 db = Database()

@@ -16,4 +16,13 @@ WHITELIST_USER_IDS: set[int] = {
     if uid.strip().isdigit()
 }
 
+# Админы: доступ к /admin (статистика, рассылка, OTA-обновления, настройки).
+# Если ADMIN_IDS не задан — админы совпадают с whitelist.
+raw_admins = os.getenv("ADMIN_IDS", "") or raw_whitelist
+ADMIN_IDS: set[int] = {
+    int(uid.strip())
+    for uid in raw_admins.split(",")
+    if uid.strip().isdigit()
+}
+
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "20"))

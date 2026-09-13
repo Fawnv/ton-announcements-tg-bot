@@ -16,9 +16,11 @@ class WhitelistMiddleware(BaseMiddleware):
     def __init__(
         self,
         whitelist: Optional[set[int]] = None,
-        admin_whitelist: Optional[set[int]] = None
+        admin_whitelist: Optional[set[int]] = None,
+        admins: Optional[set[int]] = None
     ):
-        self.whitelist = whitelist or admin_whitelist or set()
+        self.whitelist = whitelist or set()
+        self.admins = admins or admin_whitelist or set()
 
     async def __call__(
         self,
@@ -30,7 +32,7 @@ class WhitelistMiddleware(BaseMiddleware):
         if not user:
             return await handler(event, data)
 
-        if user.id in self.whitelist:
+        if user.id in self.whitelist or user.id in self.admins:
             return await handler(event, data)
 
         user_db = await db.get_user(user.id)
