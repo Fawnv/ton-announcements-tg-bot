@@ -149,46 +149,46 @@ async def get_user_wallet_limit(user_id: int) -> int:
 # --- КЛАВИАТУРЫ ---
 def get_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [btn(" Мой вотч-лист", cb="show_watchlist", icon="watch")],
-        [btn(" Добавить кошелек", cb="add_wallet_btn", icon="pencil")],
+        [btn("👀 Мой вотч-лист", cb="show_watchlist", icon="watch")],
+        [btn("➕ Добавить кошелек", cb="add_wallet_btn", icon="pencil")],
         [
-            btn(" Валюта", cb="settings_fiat", icon="chart"),
-            btn(" Фильтры", cb="settings_filters", icon="scale")
+            btn("⚙️ Валюта", cb="settings_fiat", icon="chart"),
+            btn("🎯 Фильтры", cb="settings_filters", icon="scale")
         ],
-        [btn(" Подписка", cb="subscribe_menu", icon="star")]
+        [btn("⭐ Подписка", cb="subscribe_menu", icon="star")]
     ]
     if is_admin:
-        rows.append([btn(" Админка", cb="admin_panel", icon="gear")])
+        rows.append([btn("🛠 Админка", cb="admin_panel", icon="gear")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_sub_keyboard(prices: dict[str, int], usd_prices: dict[str, float] | None = None) -> InlineKeyboardMarkup:
     rows = [
-        [btn(f" 1 месяц — {prices['month']} XTR", cb="buy_sub_month", style="success", icon="star")],
-        [btn(f" 1 год — {prices['year']} XTR", cb="buy_sub_year", style="success", icon="star")],
-        [btn(f" Навсегда — {prices['lifetime']} XTR", cb="buy_sub_lifetime", style="success", icon="star")],
+        [btn(f"⭐ 1 месяц — {prices['month']} XTR", cb="buy_sub_month", style="success", icon="star")],
+        [btn(f"⭐ 1 год — {prices['year']} XTR", cb="buy_sub_year", style="success", icon="star")],
+        [btn(f"♾️ Навсегда — {prices['lifetime']} XTR", cb="buy_sub_lifetime", style="success", icon="star")],
     ]
     if usd_prices is not None:
         rows.append([btn("🪙 Оплатить криптой (USD)", cb="crypto_menu", icon="jetton")])
-    rows.append([btn(" Назад", cb="back_to_main")])
+    rows.append([btn("🔙 Назад", cb="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_crypto_keyboard(usd_prices: dict[str, float]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [btn(f" 1 месяц — ${usd_prices['month']:.2f}", cb="buy_crypto_month", style="success", icon="jetton")],
-            [btn(f" 1 год — ${usd_prices['year']:.2f}", cb="buy_crypto_year", style="success", icon="jetton")],
-            [btn(f" Навсегда — ${usd_prices['lifetime']:.2f}", cb="buy_crypto_lifetime", style="success", icon="jetton")],
-            [btn(" Назад", cb="subscribe_menu")]
+            [btn(f"🪙 1 месяц — ${usd_prices['month']:.2f}", cb="buy_crypto_month", style="success", icon="jetton")],
+            [btn(f"🪙 1 год — ${usd_prices['year']:.2f}", cb="buy_crypto_year", style="success", icon="jetton")],
+            [btn(f"🪙 Навсегда — ${usd_prices['lifetime']:.2f}", cb="buy_crypto_lifetime", style="success", icon="jetton")],
+            [btn("🔙 Назад", cb="subscribe_menu")]
         ]
     )
 
 
 FIAT_OPTIONS = [
-    ("usd", " USD"),
-    ("eur", " EUR"),
-    ("rub", " RUB"),
+    ("usd", "💵 USD"),
+    ("eur", "💶 EUR"),
+    ("rub", "🪙 RUB"),
 ]
 
 
@@ -200,8 +200,8 @@ def get_fiat_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
         rows.append([
             btn(f"{mark}{label}", cb=f"toggle_fiat_{code}", icon="ok" if code in selected else None)
         ])
-    rows.append([btn(" Выключить цены", cb="toggle_fiat_off", icon="red")])
-    rows.append([btn(" Назад в меню", cb="back_to_main")])
+    rows.append([btn("🔴 Выключить цены", cb="toggle_fiat_off", icon="red")])
+    rows.append([btn("🔙 Назад в меню", cb="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -209,7 +209,7 @@ def get_fiat_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer(" Действие отменено.", reply_markup=get_main_keyboard())
+    await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
 
 
 # --- АКТИВАЦИЯ ПО КЛЮЧУ TONAPI ДЛЯ ФРИ-ЮЗЕРОВ ---
@@ -231,21 +231,21 @@ async def cb_activate_by_key(callback: CallbackQuery, state: FSMContext):
 @router.message(FormStates.waiting_for_api_key)
 async def process_user_api_key(message: Message, state: FSMContext, ton_client: TonApiClient):
     if not message.text:
-        await message.answer(" Ключ должен быть текстом. Отправьте ключ сообщением или /cancel.")
+        await message.answer("❌ Ключ должен быть текстом. Отправьте ключ сообщением или /cancel.")
         return
 
     if message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer(" Ввод ключа отменен.")
+        await message.answer("❌ Ввод ключа отменен.")
         return
 
     key = message.text.strip()
-    wait_m = await message.answer(" Проверяю валидность ключа на tonapi.io...")
+    wait_m = await message.answer("🔍 Проверяю валидность ключа на tonapi.io...")
 
     is_valid = await ton_client.verify_key(key)
     if not is_valid:
         await wait_m.edit_text(
-            " <b>Неверный API-ключ!</b>\n"
+            "❌ <b>Неверный API-ключ!</b>\n"
             "Сервер tonapi.io отклонил этот ключ. Убедитесь, что скопировали его полностью из вкладки <b>TON API > API Keys</b>, и попробуйте снова:",
             parse_mode="HTML"
         )
@@ -332,13 +332,13 @@ async def cb_toggle_fiat(callback: CallbackQuery):
 
     if code == "off":
         selected = []
-        await callback.answer(" Цены выключены")
+        await callback.answer("🔴 Цены выключены")
     elif code in selected:
         selected.remove(code)
-        await callback.answer(f" {code.upper()} выключена")
+        await callback.answer(f"▫️ {code.upper()} выключена")
     else:
         selected.append(code)
-        await callback.answer(f" {code.upper()} включена")
+        await callback.answer(f"✅ {code.upper()} включена")
 
     # Пустой набор храним как "off", иначе get_user_fiat вернет дефолт
     await db.set_user_fiat(callback.from_user.id, ",".join(selected) if selected else "off")
@@ -346,7 +346,7 @@ async def cb_toggle_fiat(callback: CallbackQuery):
     state = " + ".join(c.upper() for c in selected) if selected else "выключено"
     try:
         await callback.message.edit_text(
-            " <b>Настройки отображения цен:</b>\n\n"
+            "⚙️ <b>Настройки отображения цен:</b>\n\n"
             f"Выбрано: <b>{state}</b>\n\n"
             "Нажмите на валюту, чтобы включить её. Нажмите ещё раз — выключить.\n"
             "<i>Пример: 15.0000 TON (20.70 USD | 1742.40 RUB)</i>",
@@ -363,10 +363,10 @@ def get_filters_keyboard(min_in: float, min_out: float) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [btn(f" Мин. входящий: {in_text}", cb="set_filter_in_btn", icon="in")],
-            [btn(f" Мин. исходящий: {out_text}", cb="set_filter_out_btn", icon="out")],
-            [btn(" Сбросить фильтры", cb="reset_filters_btn", icon="reject")],
-            [btn(" Назад в меню", cb="back_to_main")]
+            [btn(f"📥 Мин. входящий: {in_text}", cb="set_filter_in_btn", icon="in")],
+            [btn(f"📤 Мин. исходящий: {out_text}", cb="set_filter_out_btn", icon="out")],
+            [btn("🔄 Сбросить фильтры", cb="reset_filters_btn", icon="reject")],
+            [btn("🔙 Назад в меню", cb="back_to_main")]
         ]
     )
 
@@ -374,10 +374,10 @@ def get_filters_keyboard(min_in: float, min_out: float) -> InlineKeyboardMarkup:
 async def cb_settings_filters(callback: CallbackQuery):
     min_in, min_out = await db.get_user_filters(callback.from_user.id)
     text = (
-        " <b>Настройки фильтрации сумм:</b>\n\n"
+        "🎯 <b>Настройки фильтрации сумм:</b>\n\n"
         "Вы можете скрыть мелкие переводы, чтобы бот не спамил уведомлениями.\n\n"
-        f" <b>Порог входящих:</b> <code>{min_in:.2f} TON</code>\n"
-        f" <b>Порог исходящих:</b> <code>{min_out:.2f} TON</code>\n\n"
+        f"📥 <b>Порог входящих:</b> <code>{min_in:.2f} TON</code>\n"
+        f"📤 <b>Порог исходящих:</b> <code>{min_out:.2f} TON</code>\n\n"
         "<i>Транзакции меньше выбранной суммы будут игнорироваться.</i>"
     )
     await callback.message.edit_text(text, reply_markup=get_filters_keyboard(min_in, min_out), parse_mode="HTML")
@@ -387,7 +387,7 @@ async def cb_settings_filters(callback: CallbackQuery):
 async def cb_set_filter_in(callback: CallbackQuery, state: FSMContext):
     await state.set_state(FormStates.waiting_for_filter_in)
     await callback.message.answer(
-        " Введите минимальную сумму для <b>входящих</b> транзакций в TON (например: <code>5</code> или <code>0.5</code>):\n\n"
+        "📥 Введите минимальную сумму для <b>входящих</b> транзакций в TON (например: <code>5</code> или <code>0.5</code>):\n\n"
         "<i>Для отключения фильтра отправьте 0. Для отмены: /cancel</i>",
         parse_mode="HTML"
     )
@@ -396,12 +396,12 @@ async def cb_set_filter_in(callback: CallbackQuery, state: FSMContext):
 @router.message(FormStates.waiting_for_filter_in)
 async def process_filter_in(message: Message, state: FSMContext):
     if not message.text:
-        await message.answer(" Сумма должна быть числом. Отправьте текстом или /cancel.")
+        await message.answer("❌ Сумма должна быть числом. Отправьте текстом или /cancel.")
         return
 
     if message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer(" Действие отменено.", reply_markup=get_main_keyboard())
+        await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
         return
 
     try:
@@ -409,7 +409,7 @@ async def process_filter_in(message: Message, state: FSMContext):
         if val < 0:
             raise ValueError
     except ValueError:
-        await message.answer(" Введите корректное положительное число (например: <code>5</code> или <code>2.5</code>):", parse_mode="HTML")
+        await message.answer("❌ Введите корректное положительное число (например: <code>5</code> или <code>2.5</code>):", parse_mode="HTML")
         return
 
     await db.set_user_filter_in(message.from_user.id, val)
@@ -431,12 +431,12 @@ async def cb_set_filter_out(callback: CallbackQuery, state: FSMContext):
 @router.message(FormStates.waiting_for_filter_out)
 async def process_filter_out(message: Message, state: FSMContext):
     if not message.text:
-        await message.answer(" Сумма должна быть числом. Отправьте текстом или /cancel.")
+        await message.answer("❌ Сумма должна быть числом. Отправьте текстом или /cancel.")
         return
 
     if message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer(" Действие отменено.", reply_markup=get_main_keyboard())
+        await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
         return
 
     try:
@@ -444,7 +444,7 @@ async def process_filter_out(message: Message, state: FSMContext):
         if val < 0:
             raise ValueError
     except ValueError:
-        await message.answer(" Введите корректное положительное число (например: <code>10</code> или <code>1.5</code>):", parse_mode="HTML")
+        await message.answer("❌ Введите корректное положительное число (например: <code>10</code> или <code>1.5</code>):", parse_mode="HTML")
         return
 
     await db.set_user_filter_out(message.from_user.id, val)
@@ -500,12 +500,12 @@ async def cb_add_wallet_btn(callback: CallbackQuery, state: FSMContext):
 @router.message(FormStates.waiting_for_watch_address)
 async def form_watch_address(message: Message, state: FSMContext, ton_client: TonApiClient):
     if not message.text:
-        await message.answer(" Адрес должен быть текстом. Отправьте адрес сообщением или /cancel.")
+        await message.answer("❌ Адрес должен быть текстом. Отправьте адрес сообщением или /cancel.")
         return
 
     if message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer(" Действие отменено.", reply_markup=get_main_keyboard())
+        await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
         return
 
     await state.clear()
@@ -577,7 +577,7 @@ async def show_watchlist(event: Message | CallbackQuery):
             text += f"    {E_CHART} Баланс: <code>{w['last_balance']:.4f} TON</code>\n\n"
             kb_rows.append([
                 btn(f"ℹ️ Инфо #{idx}", cb=f"info_w_{w['id']}", icon="info"),
-                btn(f" Удалить #{idx}", cb=f"del_w_{w['id']}", icon="reject")
+                btn(f"❌ Удалить #{idx}", cb=f"del_w_{w['id']}", icon="reject")
             ])
         kb_rows.append([btn("➕ Добавить еще", cb="add_wallet_btn", icon="pencil")])
         kb_rows.append([btn("🔙 В меню", cb="back_to_main")])
@@ -617,7 +617,7 @@ async def cb_delete_watched_wallet(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [btn("✅ Да, удалить", cb=f"dely_w_{wallet_id}", style="danger", icon="ok")],
-            [btn(" Отмена", cb="show_watchlist", icon="reject")]
+            [btn("❌ Отмена", cb="show_watchlist", icon="reject")]
         ]
     )
     await callback.message.edit_text(
@@ -686,7 +686,7 @@ async def cb_wallet_info(callback: CallbackQuery):
         inline_keyboard=[
             [btn("✏️ Название", cb=f"ren_w_{wallet_id}", icon="pencil")],
             [btn("📜 История", cb=f"hist_w_{wallet_id}", icon="history")],
-            [btn(" Удалить", cb=f"del_w_{wallet_id}", icon="reject")],
+            [btn("❌ Удалить", cb=f"del_w_{wallet_id}", icon="reject")],
             [btn("🔙 К списку", cb="show_watchlist")]
         ]
     )
@@ -720,12 +720,12 @@ async def cb_rename_wallet(callback: CallbackQuery, state: FSMContext):
 @router.message(FormStates.waiting_for_wallet_label)
 async def process_wallet_label(message: Message, state: FSMContext):
     if not message.text:
-        await message.answer(" Имя должно быть текстом. Попробуйте еще раз или /cancel.")
+        await message.answer("❌ Имя должно быть текстом. Попробуйте еще раз или /cancel.")
         return
 
     if message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer(" Переименование отменено.")
+        await message.answer("❌ Переименование отменено.")
         return
 
     data = await state.get_data()
@@ -733,7 +733,7 @@ async def process_wallet_label(message: Message, state: FSMContext):
     await state.clear()
 
     if not wallet_id:
-        await message.answer(" Ошибка состояния, попробуйте заново.", reply_markup=get_main_keyboard())
+        await message.answer("❌ Ошибка состояния, попробуйте заново.", reply_markup=get_main_keyboard())
         return
 
     label = "" if message.text.strip() == "0" else message.text.strip()[:32]
@@ -1109,7 +1109,7 @@ async def _answer_conversion(inline_query: InlineQuery, conv: tuple[float, str, 
         await inline_query.answer(
             [_inline_article(
                 "conv_err",
-                f" Курс {src[1].upper()} → {dst[1].upper()} не найден",
+                f"❌ Курс {src[1].upper()} → {dst[1].upper()} не найден",
                 "Конвертер @tonancbot",
                 text,
             )],
@@ -1147,7 +1147,7 @@ async def _answer_wallet_card(inline_query: InlineQuery, query: str, ton_client:
         await inline_query.answer(
             [_inline_article(
                 q_hash,
-                " Кошелек или домен не найден",
+                "❌ Кошелек или домен не найден",
                 f"Не удалось найти: {query[:60]}",
                 f"{E_REJECT} Кошелек или домен <code>{html.escape(query)}</code> не найден в сети TON.",
             )],
@@ -1174,7 +1174,7 @@ async def _answer_wallet_card(inline_query: InlineQuery, query: str, ton_client:
     await inline_query.answer(
         [_inline_article(
             q_hash,
-            f" Баланс: {bal:.4f} TON{domain_label}",
+            f"💎 Баланс: {bal:.4f} TON{domain_label}",
             f"Адрес: {short_addr(raw_addr)}",
             text,
             reply_markup=card_kb,
@@ -1188,22 +1188,27 @@ async def _answer_wallet_card(inline_query: InlineQuery, query: str, ton_client:
 async def inline_query_handler(inline_query: InlineQuery, ton_client: TonApiClient):
     query = inline_query.query.strip()
 
+    # 1. Пустой ввод — карточка своего кошелька + подсказка
     if not query:
         await _answer_own_wallet(inline_query, ton_client)
         return
 
+    # 2. Калькулятор: 13 + 13, (2+3)*4, 2^10
     if is_math_query(query):
         await _answer_calc(inline_query, query)
         return
 
+    # 3. Конвертер валют и токенов: 123 gram rub, 100 usd rub, 5 ton usd
     conv = parse_conversion(query)
     if conv:
         await _answer_conversion(inline_query, conv, ton_client)
         return
 
+    # 4. Кошелек по адресу или домену
     if is_potential_ton_target(query):
         await _answer_wallet_card(inline_query, query, ton_client)
         return
 
+    # 5. Ничего не распознано — подсказка о возможностях
     await inline_query.answer([_inline_help_article()], cache_time=15, is_personal=True)
 
