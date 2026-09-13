@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  ton-bot:
+    build: .
+    container_name: ton_telegram_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./bot_users.db:/app/bot_users.db
+    networks:
+      - web-network
+
+networks:
+  web-network:
+    external: true
