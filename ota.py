@@ -79,7 +79,6 @@ async def apply_update() -> tuple[bool, str]:
     if code != 0:
         return False, f"git pull завершился с ошибкой:\n<code>{out}</code>"
 
-    # Если обновился requirements.txt — доустанавливаем зависимости
     code, changed = await _run_git("diff", "--name-only", "ORIG_HEAD", "HEAD")
     if code == 0 and "requirements.txt" in changed.splitlines():
         code, out = await _run_cmd(
