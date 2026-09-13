@@ -10,7 +10,6 @@ class TonApiClient:
         self.base_url = "https://tonapi.io/v2"
         self.master_api_key = api_key or master_api_key
         self._session: Optional[aiohttp.ClientSession] = None
-        # Кэш курсов: {(tokens, currencies): (timestamp, данные)}
         self._rates_cache: dict[tuple[str, str], tuple[float, dict[str, dict[str, float]]]] = {}
 
     async def get_session(self) -> aiohttp.ClientSession:
