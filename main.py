@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import (
-    BOT_TOKEN, WHITELIST_USER_IDS, ADMIN_IDS, TONAPI_KEY, CHECK_INTERVAL,
+    BOT_TOKEN, WHITELIST_USER_IDS, ADMIN_IDS, TONAPI_KEY, TONAPI_KEYS, CHECK_INTERVAL,
     PAY2328_PROJECT, PAY2328_API_KEY, PAY2328_CALLBACK_URL
 )
 from database import db
@@ -26,7 +26,10 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
-    ton_client = TonApiClient(api_key=TONAPI_KEY)
+    ton_client = TonApiClient(
+        api_key=TONAPI_KEY,
+	api_keys=TONAPI_KEYS,
+    )
 
     dp["ton_client"] = ton_client
 

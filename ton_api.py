@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import logging
+import random
 import time
 from typing import Optional, Any
 
@@ -14,11 +15,37 @@ class TonApiClient:
     FAST_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=2.2, connect=1.0, sock_read=1.8)
     TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
 
-    def __init__(self, api_key: Optional[str] = None, master_api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        master_api_key: Optional[str] = None,
+        api_keys: Optional[list[str]] = None,
+    ):
         self.base_url = "https://tonapi.io/v2"
-        self.master_api_key = api_key or master_api_key
+
+        keys: list[str] = []
+
+        for key in api_keys or []:
+            key = (key or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+
+        for key in (api_key, master_api_key):
+            key = (key or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+
+        self._api_keys = keys
+        self.master_api_key = keys[0] if keys else None
+
+        # key -> monotonic timestamp, до которого ключ отдыхает после 429
+        self._key_cooldowns: dict[str, float] = {}
+
         self._session: Optional[aiohttp.ClientSession] = None
-        self._rates_cache: dict[tuple[str, str], tuple[float, dict[str, dict[str, float]]]] = {}
+        self._rates_cache: dict[
+            tuple[str, str],
+            tuple[float, dict[str, dict[str, float]]]
+        ] = {}
         self._dns_cache: dict[str, tuple[float, str]] = {}
         self._account_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -32,83 +59,221 @@ class TonApiClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    def _get_headers(self, custom_key: Optional[str] = None) -> dict[str, str]:
+    def _pick_master_key(
+        self,
+        exclude: Optional[set[str]] = None,
+    ) -> Optional[str]:
+        """Случайный доступный master key.
+
+        Ключи, недавно получившие 429, временно исключаются.
+        """
+        if not self._api_keys:
+            return None
+
+        exclude = exclude or set()
+        now = time.monotonic()
+
+        available = [
+            key
+            for key in self._api_keys
+            if key not in exclude
+            and self._key_cooldowns.get(key, 0.0) <= now
+        ]
+
+        if not available:
+            return None
+
+        return random.choice(available)
+
+
+    def _cooldown_master_key(
+        self,
+        key: Optional[str],
+        retry_after: float = 1.0,
+    ) -> None:
+        if not key or key not in self._api_keys:
+            return
+
+        cooldown = min(max(retry_after, 1.0), 30.0)
+
+        self._key_cooldowns[key] = (
+            time.monotonic() + cooldown
+        )
+
+        logger.warning(
+            "TonAPI key ...%s получил 429, cooldown %.1fs",
+            key[-6:],
+            cooldown,
+        )
+
+
+    def _headers_for_token(
+        self,
+        token: Optional[str],
+    ) -> dict[str, str]:
         headers = {"Accept": "application/json"}
-        token = custom_key or self.master_api_key
+
         if token:
             headers["Authorization"] = f"Bearer {token}"
+
         return headers
+
+    def _get_headers(
+        self,
+        custom_key: Optional[str] = None,
+    ) -> dict[str, str]:
+        # Персональный пользовательский ключ всегда имеет приоритет
+        # и никогда не смешивается с master pool.
+        token = custom_key
+
+        if not token:
+            token = self._pick_master_key()
+
+        return self._headers_for_token(token)    
 
     async def _get_json_fast(
         self,
         url: str,
         api_key: Optional[str] = None,
         *,
-        attempts: int = 2,
+        attempts: int = 3,
+        params: Optional[dict[str, Any]] = None,
     ) -> tuple[Optional[dict[str, Any]], str]:
-        """Быстрый GET для inline-критичных запросов.
+        """GET с failover master-ключей после HTTP 429.
 
-        Возвращает (json, status), где status: ok / not_found / temporary / error.
-        На 429 и 5xx делает короткий retry, чтобы не отдавать пользователю ложный
-        "не найден" из-за краткого rate limit или сбоя TonAPI.
+        custom api_key пользователя никогда не ротируется по master pool.
         """
+
         session = await self.get_session()
-        last_status: Optional[int] = None
+
+        used_keys: set[str] = set()
+
+        # Пользовательский ключ закрепляем за запросом.
+        current_token = api_key
 
         for attempt in range(max(1, attempts)):
+            if api_key is None:
+                if current_token is None:
+                    current_token = self._pick_master_key(
+                        exclude=used_keys
+                    )
+
+                # Master keys есть, но все находятся в cooldown.
+                if self._api_keys and current_token is None:
+                    logger.warning(
+                        "Все TonAPI master keys сейчас в cooldown"
+                    )
+                    return None, "temporary"
+
             try:
                 async with session.get(
                     url,
-                    headers=self._get_headers(api_key),
+                    params=params,
+                    headers=self._headers_for_token(current_token),
                     timeout=self.FAST_REQUEST_TIMEOUT,
                 ) as response:
-                    last_status = response.status
 
                     if response.status == 200:
                         try:
                             return await response.json(), "ok"
-                        except (aiohttp.ContentTypeError, ValueError) as e:
-                            logger.warning(f"TonAPI вернул некорректный JSON для {url}: {e}")
+                        except (
+                            aiohttp.ContentTypeError,
+                            ValueError,
+                        ) as e:
+                            logger.warning(
+                                "TonAPI invalid JSON %s: %s",
+                                url,
+                                e,
+                            )
                             return None, "temporary"
 
                     if response.status == 404:
                         return None, "not_found"
 
-                    if response.status in self.TRANSIENT_STATUSES:
+                    if response.status == 429:
+                        retry_after_raw = response.headers.get(
+                            "Retry-After",
+                            "",
+                        )
+
+                        try:
+                            retry_after = float(retry_after_raw)
+                        except (TypeError, ValueError):
+                            retry_after = 1.0
+
+                        # Master pool:
+                        # исключаем получивший 429 ключ и пробуем другой.
+                        if api_key is None and current_token:
+                            self._cooldown_master_key(
+                                current_token,
+                                retry_after,
+                            )
+
+                            used_keys.add(current_token)
+                            current_token = None
+
+                            if attempt + 1 < attempts:
+                                continue
+
+                        # Пользовательский custom key не заменяем
+                        # ключом владельца бота.
                         if attempt + 1 < attempts:
-                            retry_after_raw = response.headers.get("Retry-After", "")
-                            try:
-                                retry_after = float(retry_after_raw)
-                            except (TypeError, ValueError):
-                                retry_after = 0.0
-                            delay = min(max(retry_after, 0.15), 0.45)
-                            await asyncio.sleep(delay)
+                            await asyncio.sleep(
+                                min(max(retry_after, 0.25), 2.0)
+                            )
                             continue
 
-                        logger.warning(f"TonAPI временно недоступен для {url}: HTTP {response.status}")
                         return None, "temporary"
 
-                    logger.warning(f"TonAPI запрос {url}: HTTP {response.status}")
+                    if response.status in {
+                        500,
+                        502,
+                        503,
+                        504,
+                    }:
+                        if attempt + 1 < attempts:
+                            await asyncio.sleep(0.2)
+                            continue
+
+                        return None, "temporary"
+
+                    logger.warning(
+                        "TonAPI %s: HTTP %s",
+                        url,
+                        response.status,
+                    )
                     return None, "error"
 
             except asyncio.TimeoutError:
                 if attempt + 1 < attempts:
                     await asyncio.sleep(0.15)
                     continue
-                logger.warning(f"Таймаут TonAPI для {url}")
+
                 return None, "temporary"
+
             except aiohttp.ClientError as e:
+                logger.warning(
+                    "TonAPI network error %s: %s",
+                    url,
+                    e,
+                )
+
                 if attempt + 1 < attempts:
                     await asyncio.sleep(0.15)
                     continue
-                logger.warning(f"Сетевая ошибка TonAPI для {url}: {e}")
-                return None, "temporary"
-            except Exception as e:
-                logger.error(f"Неожиданная ошибка TonAPI для {url}: {e}")
+
                 return None, "temporary"
 
-        logger.warning(f"TonAPI запрос {url} завершился без результата, последний HTTP: {last_status}")
+            except Exception as e:
+                logger.exception(
+                    "Unexpected TonAPI error %s: %s",
+                    url,
+                    e,
+                )
+                return None, "temporary"
+
         return None, "temporary"
+
 
     async def verify_key(self, test_api_key: str) -> bool:
         """Проверяет валидность ключа тестовым запросом к TonAPI."""
@@ -192,6 +357,27 @@ class TonApiClient:
 
         return None
 
+    async def get_events(
+        self,
+        address: str,
+        limit: int = 10,
+        api_key: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        url = f"{self.base_url}/accounts/{address}/events"
+
+        data, status = await self._get_json_fast(
+            url,
+            api_key=api_key,
+            attempts=3,
+            params={"limit": limit},
+        )
+
+        if data:
+            return data.get("events", [])
+
+        return []
+
+
     async def get_events(self, address: str, limit: int = 10, api_key: Optional[str] = None) -> list[dict[str, Any]]:
         """Получает последние события транзакций по адресу."""
         session = await self.get_session()
@@ -207,46 +393,92 @@ class TonApiClient:
             return []
 
     async def get_rates(
-        self, tokens: list[str], currencies: list[str], api_key: Optional[str] = None
+        self,
+        tokens: list[str],
+        currencies: list[str],
+        api_key: Optional[str] = None,
     ) -> dict[str, dict[str, float]]:
-        """Курсы токенов TonAPI к валютам: {ton: {usd: 1.3, rub: 110}}.
+        """Курсы токенов TonAPI к валютам.
 
-        Неподдерживаемые токены либо отсутствуют в ответе, либо идут с нулевым
-        курсом — вызывающий код обязан это проверять. Кэш на 60 секунд.
+        Пример результата:
+        {
+            "ton": {
+                "usd": 1.3,
+                "rub": 110.0,
+            }
+        }
+
+        Кэш на 60 секунд.
         """
-        tkey = ",".join(sorted({t.lower() for t in tokens if t}))
-        ckey = ",".join(sorted({c.lower() for c in currencies if c}))
+
+        tkey = ",".join(
+            sorted({
+                token.lower()
+                for token in tokens
+                if token
+            })
+        )
+
+        ckey = ",".join(
+            sorted({
+                currency.lower()
+                for currency in currencies
+                if currency
+            })
+        )
+
         if not tkey or not ckey:
             return {}
 
         now = time.time()
+
         cached = self._rates_cache.get((tkey, ckey))
         if cached and now - cached[0] < 60:
             return cached[1]
 
-        session = await self.get_session()
-        try:
-            async with session.get(
-                f"{self.base_url}/rates",
-                params={"tokens": tkey, "currencies": ckey},
-                headers=self._get_headers(api_key),
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    out: dict[str, dict[str, float]] = {}
-                    for sym, info in (data.get("rates") or {}).items():
-                        prices = info.get("prices") or {}
-                        out[str(sym).lower()] = {
-                            str(cur).lower(): float(v)
-                            for cur, v in prices.items()
-                            if v is not None
-                        }
-                    self._rates_cache[(tkey, ckey)] = (now, out)
-                    return out
-                logger.error(f"TonAPI rates {tkey} -> {ckey}: HTTP {response.status}")
-        except Exception as e:
-            logger.error(f"Ошибка получения курсов {tkey}: {e}")
-        return {}
+        data, status = await self._get_json_fast(
+            f"{self.base_url}/rates",
+            api_key=api_key,
+            attempts=3,
+            params={
+                "tokens": tkey,
+                "currencies": ckey,
+            },
+        )
+
+        if not data:
+            logger.warning(
+                "Не удалось получить TonAPI rates %s -> %s, status=%s",
+                tkey,
+                ckey,
+                status,
+            )
+            return {}
+
+        out: dict[str, dict[str, float]] = {}
+
+        for symbol, info in (data.get("rates") or {}).items():
+            prices = info.get("prices") or {}
+
+            parsed_prices: dict[str, float] = {}
+
+            for currency, value in prices.items():
+                if value is None:
+                    continue
+
+                try:
+                    parsed_prices[str(currency).lower()] = float(value)
+                except (TypeError, ValueError):
+                    continue
+
+            out[str(symbol).lower()] = parsed_prices
+
+        self._rates_cache[(tkey, ckey)] = (
+            time.time(),
+            out,
+        )
+
+        return out
 
     async def get_ton_rates(self, api_key: Optional[str] = None) -> dict[str, float]:
         """Возвращает актуальный курс TON к USD, EUR, RUB (кэш на 60 секунд)."""
