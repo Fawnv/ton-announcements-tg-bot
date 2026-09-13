@@ -7,11 +7,12 @@ from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
+    InlineKeyboardMarkup
 )
 from database import db
-from emojis import E_LOCK, E_KEY, E_BULB
+from kb import btn
+from emojis import E_LOCK, E_BULB
+from inline_tools import is_math_query, parse_conversion
 
 class WhitelistMiddleware(BaseMiddleware):
     def __init__(
@@ -41,6 +42,13 @@ class WhitelistMiddleware(BaseMiddleware):
         if has_custom_key:
             return await handler(event, data)
 
+        # Калькулятор и конвертер в инлайне доступны всем — это визитная карточка бота
+        # (курсы TonAPI кэшируются, квоты не выжигаются)
+        if isinstance(event, InlineQuery):
+            query = (event.query or "").strip()
+            if is_math_query(query) or parse_conversion(query):
+                return await handler(event, data)
+
         state = data.get("state")
         current_state = await state.get_state() if state else None
 
@@ -52,8 +60,8 @@ class WhitelistMiddleware(BaseMiddleware):
 
         unlock_kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🔑 Ввести свой TonAPI ключ", callback_data="activate_by_key")],
-                [InlineKeyboardButton(text="ℹ️ Как получить ключ (бесплатно)", url="https://tonapi.io")]
+                [btn("🔑 Ввести свой TonAPI ключ", cb="activate_by_key", icon="key")],
+                [btn("ℹ️ Как получить ключ (бесплатно)", url="https://tonapi.io", icon="info")]
             ]
         )
 

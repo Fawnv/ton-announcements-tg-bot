@@ -4,6 +4,8 @@ ID привязаны к конкретному Telegram-аккаунту-вла
 только вместе с владельцем бота, иначе эмодзи не отрендерятся.
 """
 
+import re as _re
+
 E_TON     = '<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji>'
 E_CHART   = '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>'
 E_BELL    = '<tg-emoji emoji-id="5458603043203327669">🔔</tg-emoji>'
@@ -41,3 +43,12 @@ E_WAIT    = '<tg-emoji emoji-id="5451732530048802485">⏳</tg-emoji>'
 
 # Иконка кнопки для платежей: crypto-тарифы
 E_PAY     = E_JETTON
+
+# Сырые ID премиум-эмодзи (для иконок inline-кнопок icon_custom_emoji_id).
+# Собираются автоматически из констант выше: ICON["watch"] -> id
+ICON: dict[str, str] = {}
+for _name, _val in list(globals().items()):
+    if _name.startswith("E_") and isinstance(_val, str):
+        _m = _re.search(r'emoji-id="(\d+)"', _val)
+        if _m:
+            ICON.setdefault(_name[2:].lower(), _m.group(1))

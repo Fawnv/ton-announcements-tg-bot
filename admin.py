@@ -10,14 +10,14 @@ from aiogram.filters import Command, BaseFilter
 from aiogram.types import (
     Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
+    InlineKeyboardMarkup
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import ADMIN_IDS
+from config import ADMIN_IDS, IS_DOCKER
 from database import db
+from kb import btn
 from emojis import E_CHART, E_TIME, E_OK, E_INFO, E_BULB, E_WARN, E_STAR, E_KEY, E_LOC
 import ota
 
@@ -59,21 +59,24 @@ class AdminStates(StatesGroup):
 
 # --- КЛАВИАТУРЫ ---
 def get_admin_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-            [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users")],
-            [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
-            [InlineKeyboardButton(text="🔄 Проверить обновления", callback_data="admin_check_update")],
-            [
-                InlineKeyboardButton(text="⚙️ Цены ⭐", callback_data="admin_prices"),
-                InlineKeyboardButton(text="🪙 Цены USD", callback_data="admin_prices_usd")
-            ],
-            [InlineKeyboardButton(text="🧩 Настройки (.env)", callback_data="admin_env")],
-            [InlineKeyboardButton(text="🔁 Перезапустить бота", callback_data="admin_restart", style="danger")],
-            [InlineKeyboardButton(text="🔙 В главное меню", callback_data="back_to_main")]
-        ]
-    )
+    rows = [
+        [btn("📊 Статистика", cb="admin_stats", icon="chart")],
+        [btn("👥 Пользователи", cb="admin_users", icon="user")],
+        [btn("📢 Рассылка", cb="admin_broadcast", icon="comment")],
+    ]
+    # OTA и редактор .env не работают в Docker: код вшит в образ,
+    # а переменные приходят через env_file при создании контейнера.
+    if not IS_DOCKER:
+        rows.append([btn("🔄 Проверить обновления", cb="admin_check_update", icon="date")])
+    rows.append([
+        btn("⚙️ Цены ⭐", cb="admin_prices", icon="star"),
+        btn("🪙 Цены USD", cb="admin_prices_usd", icon="jetton")
+    ])
+    if not IS_DOCKER:
+        rows.append([btn("🧩 Настройки (.env)", cb="admin_env", icon="gear")])
+    rows.append([btn("🔁 Перезапустить бота", cb="admin_restart", style="danger", icon="red")])
+    rows.append([btn("🔙 В главное меню", cb="back_to_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def format_uptime() -> str:
@@ -91,16 +94,23 @@ def format_uptime() -> str:
 
 
 async def show_admin_panel(event: Message | CallbackQuery):
-    text = (
-        "🛠 <b>Панель администратора</b>\n\n"
-        "• <b>Статистика</b> — пользователи, вотч-лист, подписки\n"
-        "• <b>Пользователи</b> — список с подписками и лимитами\n"
-        "• <b>Рассылка</b> — сообщение всем пользователям бота\n"
-        "• <b>Проверить обновления</b> — OTA: новые коммиты с GitHub\n"
-        "• <b>Цены</b> — тарифы в звездах и USD\n"
-        "• <b>Настройки (.env)</b> — переменные окружения без SSH\n"
-        "• <b>Перезапуск</b> — рестарт процесса бота"
-    )
+    lines = [
+        "• <b>Статистика</b> — пользователи, вотч-лист, подписки",
+        "• <b>Пользователи</b> — список с подписками и лимитами",
+        "• <b>Рассылка</b> — сообщение всем пользователям бота",
+    ]
+    if not IS_DOCKER:
+        lines.append("• <b>Проверить обновления</b> — OTA: новые коммиты с GitHub")
+    lines.append("• <b>Цены</b> — тарифы в звездах и USD")
+    if not IS_DOCKER:
+        lines.append("• <b>Настройки (.env)</b> — переменные окружения без SSH")
+    lines.append("• <b>Перезапуск</b> — рестарт процесса бота")
+    text = "🛠 <b>Панель администратора</b>\n\n" + "\n".join(lines)
+    if IS_DOCKER:
+        text += (
+            "\n\n🐳 <i>Docker-режим: OTA-обновления и редактор .env отключены. "
+            "Обновляйтесь пересборкой образа, переменные меняйте в docker-compose.</i>"
+        )
     if isinstance(event, CallbackQuery):
         await event.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
         await event.answer()
@@ -122,7 +132,7 @@ async def cb_admin_panel(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_stats")
 async def cb_admin_stats(callback: CallbackQuery):
     stats = await db.get_stats()
-    commit = await ota.get_current_commit()
+    commit = "docker" if IS_DOCKER else await ota.get_current_commit()
 
     text = (
         f"{E_CHART} <b>Статистика бота</b>\n\n"
@@ -167,9 +177,9 @@ async def process_broadcast_message(message: Message, state: FSMContext):
     await state.update_data(broadcast_text=text)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Начать рассылку", callback_data="admin_broadcast_send", style="success")],
-            [InlineKeyboardButton(text="✏️ Изменить текст", callback_data="admin_broadcast")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_broadcast_cancel")]
+            [btn("✅ Начать рассылку", cb="admin_broadcast_send", style="success", icon="ok")],
+            [btn("✏️ Изменить текст", cb="admin_broadcast", icon="pencil")],
+            [btn("❌ Отмена", cb="admin_broadcast_cancel", icon="reject")]
         ]
     )
     await message.answer(
@@ -226,9 +236,13 @@ async def cb_broadcast_send(callback: CallbackQuery, state: FSMContext):
     )
 
 
-# --- OTA-ОБНОВЛЕНИЯ ---
+# --- OTA-ОБНОВЛЕНИЯ (только вне Docker) ---
 @router.callback_query(F.data == "admin_check_update")
 async def cb_check_update(callback: CallbackQuery):
+    if IS_DOCKER:
+        await callback.answer("🐳 OTA недоступен в Docker — обновите контейнер пересборкой образа", show_alert=True)
+        return
+
     await callback.answer("⏳ Проверяю обновления...")
 
     info = await ota.check_for_updates()
@@ -251,8 +265,8 @@ async def cb_check_update(callback: CallbackQuery):
     changes = info.get("changes", "")
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬆️ Установить обновление", callback_data="admin_apply_update")],
-            [InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")]
+            [btn("⬆️ Установить обновление", cb="admin_apply_update", style="success", icon="party")],
+            [btn("🔙 В админку", cb="admin_panel")]
         ]
     )
     await callback.message.edit_text(
@@ -272,6 +286,10 @@ async def _delayed_restart(delay: float = 3.0):
 
 @router.callback_query(F.data == "admin_apply_update")
 async def cb_apply_update(callback: CallbackQuery):
+    if IS_DOCKER:
+        await callback.answer("🐳 OTA недоступен в Docker — обновите контейнер пересборкой образа", show_alert=True)
+        return
+
     await callback.answer()
     await callback.message.edit_text("⬆️ Загружаю и устанавливаю обновление...")
 
@@ -321,10 +339,10 @@ async def cb_admin_prices(callback: CallbackQuery):
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"💰 Месяц: {prices['month']} ⭐", callback_data="admin_price_month")],
-            [InlineKeyboardButton(text=f"💰 Год: {prices['year']} ⭐", callback_data="admin_price_year")],
-            [InlineKeyboardButton(text=f"💰 Навсегда: {prices['lifetime']} ⭐", callback_data="admin_price_lifetime")],
-            [InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")]
+            [btn(f"💰 Месяц: {prices['month']} ⭐", cb="admin_price_month", icon="star")],
+            [btn(f"💰 Год: {prices['year']} ⭐", cb="admin_price_year", icon="star")],
+            [btn(f"💰 Навсегда: {prices['lifetime']} ⭐", cb="admin_price_lifetime", icon="star")],
+            [btn("🔙 В админку", cb="admin_panel")]
         ]
     )
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -344,10 +362,10 @@ async def cb_admin_prices_usd(callback: CallbackQuery):
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"💰 Месяц: ${prices['month']:.2f}", callback_data="admin_priceusd_month")],
-            [InlineKeyboardButton(text=f"💰 Год: ${prices['year']:.2f}", callback_data="admin_priceusd_year")],
-            [InlineKeyboardButton(text=f"💰 Навсегда: ${prices['lifetime']:.2f}", callback_data="admin_priceusd_lifetime")],
-            [InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")]
+            [btn(f"💰 Месяц: ${prices['month']:.2f}", cb="admin_priceusd_month", icon="jetton")],
+            [btn(f"💰 Год: ${prices['year']:.2f}", cb="admin_priceusd_year", icon="jetton")],
+            [btn(f"💰 Навсегда: ${prices['lifetime']:.2f}", cb="admin_priceusd_lifetime", icon="jetton")],
+            [btn("🔙 В админку", cb="admin_panel")]
         ]
     )
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -474,11 +492,11 @@ async def cb_admin_users(callback: CallbackQuery):
 
     rows = []
     if page > 1:
-        rows.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_users_{page - 1}"))
+        rows.append(btn("⬅️ Назад", cb=f"admin_users_{page - 1}"))
     if page < pages:
-        rows.append(InlineKeyboardButton(text="➡️ Вперед", callback_data=f"admin_users_{page + 1}"))
+        rows.append(btn("➡️ Вперед", cb=f"admin_users_{page + 1}"))
     kb_rows = [rows] if rows else []
-    kb_rows.append([InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")])
+    kb_rows.append([btn("🔙 В админку", cb="admin_panel")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
     try:
@@ -510,17 +528,21 @@ def _get_env_display(key: str, masked: bool) -> str:
 
 @router.callback_query(F.data == "admin_env")
 async def cb_admin_env(callback: CallbackQuery):
+    if IS_DOCKER:
+        await callback.answer("🐳 Редактор .env недоступен в Docker — переменные задаются в docker-compose", show_alert=True)
+        return
+
     text = f"🧩 <b>Настройки бота (.env)</b>\n\n"
     rows = []
     for idx, (key, label, masked) in enumerate(ENV_KEYS):
         text += f"• <b>{label}</b>: {_get_env_display(key, masked)}\n"
-        rows.append([InlineKeyboardButton(text=f"✏️ {label}", callback_data=f"admin_env_set_{idx}")])
+        rows.append([btn(f"✏️ {label}", cb=f"admin_env_set_{idx}", icon="pencil")])
     text += (
         f"\n{E_WARN} <i>Изменения применяются после перезапуска бота.</i>\n"
         f"{E_LOC} Файл: <code>.env</code>"
     )
-    rows.append([InlineKeyboardButton(text="🔁 Перезапустить", callback_data="admin_restart", style="danger")])
-    rows.append([InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")])
+    rows.append([btn("🔁 Перезапустить", cb="admin_restart", style="danger", icon="red")])
+    rows.append([btn("🔙 В админку", cb="admin_panel")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     try:
@@ -532,6 +554,10 @@ async def cb_admin_env(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin_env_set_"))
 async def cb_admin_env_set(callback: CallbackQuery, state: FSMContext):
+    if IS_DOCKER:
+        await callback.answer("🐳 Редактор .env недоступен в Docker — переменные задаются в docker-compose", show_alert=True)
+        return
+
     try:
         idx = int(callback.data.replace("admin_env_set_", ""))
         key, label, masked = ENV_KEYS[idx]
@@ -597,8 +623,8 @@ async def process_env_value(message: Message, state: FSMContext):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔁 Перезапустить сейчас", callback_data="admin_restart", style="danger")],
-            [InlineKeyboardButton(text="🧩 К настройкам", callback_data="admin_env")]
+            [btn("🔁 Перезапустить сейчас", cb="admin_restart", style="danger", icon="red")],
+            [btn("🧩 К настройкам", cb="admin_env", icon="gear")]
         ]
     )
     await message.answer(

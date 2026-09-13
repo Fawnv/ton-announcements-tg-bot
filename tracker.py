@@ -66,7 +66,7 @@ def format_fiat_amount(amount_ton: float, rates: dict[str, float], currencies: l
         if rate:
             parts.append(f"{amount_ton * rate:.2f} {cur.upper()}")
 
-    return f"({ ' | '.join(parts) })" if parts else ""
+    return f"({' | '.join(parts)})" if parts else ""
 
 async def watch_outgoing_delivery(
     bot: Bot,
@@ -140,7 +140,8 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
     raw_address = wallet["raw_address"]
     user_address = wallet["user_address"]
     wallet_label = (wallet.get("label") or "").strip()
-    display_name = wallet_label or short_addr(user_address)
+    # Имя задает пользователь — экранируем, иначе битый HTML сломает отправку уведомлений
+    display_name = html.escape(wallet_label) if wallet_label else short_addr(user_address)
     last_event_id = wallet.get("last_event_id")
     last_event_ts = int(wallet.get("last_event_ts") or 0)
     stored_balance = float(wallet.get("last_balance") or 0.0)
@@ -175,7 +176,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
                 f"  • <b>Было:</b> <code>{stored_balance:.4f} TON</code>\n"
                 f"  • <b>Стало:</b> <code>{current_balance:.4f} TON</code> ({diff_text})\n\n"
                 f"<i>Обычно это начисление стейкинга или награда пула номинаторов.</i>\n"
-                f"{E_LINK} <a href=\"https://tonviewer.com/{user_address}\">Tonviewer</a>"
+                f"{E_LINK} <a href=\"https://tonviewer.com/{raw_address}\">Tonviewer</a>"
             )
             try:
                 await bot.send_message(user_id, text, parse_mode="HTML", disable_web_page_preview=True)

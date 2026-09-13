@@ -33,3 +33,10 @@ PAY2328_API_KEY = os.getenv("PAY2328_API_KEY", "").strip() or None
 # API требует публичный url_callback; бот работает через поллинг /v1/payment/info,
 # поэтому сюда можно указать любой валидный публичный URL.
 PAY2328_CALLBACK_URL = os.getenv("PAY2328_CALLBACK_URL", "https://2328.io/").strip()
+
+# Запущен ли бот в Docker-контейнере. В Docker код вшит в образ, а переменные
+# приходят через env_file, поэтому OTA-обновления и редактор .env отключаются.
+IS_DOCKER = (
+    os.path.isfile("/.dockerenv")
+    or os.getenv("TONANCBOT_IN_DOCKER", "").strip() == "1"
+)

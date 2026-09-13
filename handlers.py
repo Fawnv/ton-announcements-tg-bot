@@ -8,7 +8,6 @@ from aiogram.types import (
     Message,
     CallbackQuery,
     InlineKeyboardMarkup,
-    InlineKeyboardButton,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
@@ -24,9 +23,15 @@ from database import db
 from ton_api import TonApiClient
 from pay2328 import Pay2328Client
 from tracker import parse_fiat_currencies
+from kb import btn
+from inline_tools import (
+    MathError, is_math_query, try_calc, parse_conversion,
+    resolve_symbol, convert_amount, fmt_num,
+)
 from emojis import (
-    E_TON, E_CHART, E_BELL, E_REJECT, E_PENCIL, E_SEARCH, E_TIME, E_LINK,
-    E_WATCH, E_DATE, E_HISTORY, E_WARN, E_PARTY, E_OK, E_INFO, E_BULB, E_KEY, E_STAR
+    E_TON, E_CHART, E_BELL, E_REJECT, E_PENCIL, E_SEARCH, E_TIME, E_LINK, E_LOC,
+    E_WATCH, E_DATE, E_HISTORY, E_WARN, E_PARTY, E_OK, E_INFO, E_BULB, E_KEY, E_STAR,
+    E_GEAR, E_SCALE, E_JETTON
 )
 
 router = Router()
@@ -144,38 +149,38 @@ async def get_user_wallet_limit(user_id: int) -> int:
 # --- КЛАВИАТУРЫ ---
 def get_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="👀 Мой вотч-лист", callback_data="show_watchlist")],
-        [InlineKeyboardButton(text="➕ Добавить кошелек", callback_data="add_wallet_btn")],
+        [btn("👀 Мой вотч-лист", cb="show_watchlist", icon="watch")],
+        [btn("➕ Добавить кошелек", cb="add_wallet_btn", icon="pencil")],
         [
-            InlineKeyboardButton(text="⚙️ Валюта", callback_data="settings_fiat"),
-            InlineKeyboardButton(text="🎯 Фильтры", callback_data="settings_filters")
+            btn("⚙️ Валюта", cb="settings_fiat", icon="chart"),
+            btn("🎯 Фильтры", cb="settings_filters", icon="scale")
         ],
-        [InlineKeyboardButton(text="⭐ Подписка", callback_data="subscribe_menu")]
+        [btn("⭐ Подписка", cb="subscribe_menu", icon="star")]
     ]
     if is_admin:
-        rows.append([InlineKeyboardButton(text="🛠 Админка", callback_data="admin_panel")])
+        rows.append([btn("🛠 Админка", cb="admin_panel", icon="gear")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_sub_keyboard(prices: dict[str, int], usd_prices: dict[str, float] | None = None) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=f"⭐ 1 месяц — {prices['month']} XTR", callback_data="buy_sub_month", style="success")],
-        [InlineKeyboardButton(text=f"⭐ 1 год — {prices['year']} XTR", callback_data="buy_sub_year", style="success")],
-        [InlineKeyboardButton(text=f"♾️ Навсегда — {prices['lifetime']} XTR", callback_data="buy_sub_lifetime", style="success")],
+        [btn(f"⭐ 1 месяц — {prices['month']} XTR", cb="buy_sub_month", style="success", icon="star")],
+        [btn(f"⭐ 1 год — {prices['year']} XTR", cb="buy_sub_year", style="success", icon="star")],
+        [btn(f"♾️ Навсегда — {prices['lifetime']} XTR", cb="buy_sub_lifetime", style="success", icon="star")],
     ]
     if usd_prices is not None:
-        rows.append([InlineKeyboardButton(text=f"🪙 Оплатить криптой (USD)", callback_data="crypto_menu")])
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
+        rows.append([btn("🪙 Оплатить криптой (USD)", cb="crypto_menu", icon="jetton")])
+    rows.append([btn("🔙 Назад", cb="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_crypto_keyboard(usd_prices: dict[str, float]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"🪙 1 месяц — ${usd_prices['month']:.2f}", callback_data="buy_crypto_month", style="success")],
-            [InlineKeyboardButton(text=f"🪙 1 год — ${usd_prices['year']:.2f}", callback_data="buy_crypto_year", style="success")],
-            [InlineKeyboardButton(text=f"🪙 Навсегда — ${usd_prices['lifetime']:.2f}", callback_data="buy_crypto_lifetime", style="success")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="subscribe_menu")]
+            [btn(f"🪙 1 месяц — ${usd_prices['month']:.2f}", cb="buy_crypto_month", style="success", icon="jetton")],
+            [btn(f"🪙 1 год — ${usd_prices['year']:.2f}", cb="buy_crypto_year", style="success", icon="jetton")],
+            [btn(f"🪙 Навсегда — ${usd_prices['lifetime']:.2f}", cb="buy_crypto_lifetime", style="success", icon="jetton")],
+            [btn("🔙 Назад", cb="subscribe_menu")]
         ]
     )
 
@@ -192,10 +197,11 @@ def get_fiat_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
     rows = []
     for code, label in FIAT_OPTIONS:
         mark = "✅ " if code in selected else "▫️ "
-        rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"toggle_fiat_{code}")])
-    state = " + ".join(c.upper() for c in selected) if selected else "выключено"
-    rows.append([InlineKeyboardButton(text=f"🔴 Выключить цены", callback_data="toggle_fiat_off")])
-    rows.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_main")])
+        rows.append([
+            btn(f"{mark}{label}", cb=f"toggle_fiat_{code}", icon="ok" if code in selected else None)
+        ])
+    rows.append([btn("🔴 Выключить цены", cb="toggle_fiat_off", icon="red")])
+    rows.append([btn("🔙 Назад в меню", cb="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -357,10 +363,10 @@ def get_filters_keyboard(min_in: float, min_out: float) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"📥 Мин. входящий: {in_text}", callback_data="set_filter_in_btn")],
-            [InlineKeyboardButton(text=f"📤 Мин. исходящий: {out_text}", callback_data="set_filter_out_btn")],
-            [InlineKeyboardButton(text="🔄 Сбросить фильтры", callback_data="reset_filters_btn")],
-            [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_main")]
+            [btn(f"📥 Мин. входящий: {in_text}", cb="set_filter_in_btn", icon="in")],
+            [btn(f"📤 Мин. исходящий: {out_text}", cb="set_filter_out_btn", icon="out")],
+            [btn("🔄 Сбросить фильтры", cb="reset_filters_btn", icon="reject")],
+            [btn("🔙 Назад в меню", cb="back_to_main")]
         ]
     )
 
@@ -480,7 +486,7 @@ async def cb_add_wallet_btn(callback: CallbackQuery, state: FSMContext):
             f"{E_REJECT} <b>Лимит исчерпан!</b>\n"
             f"Вам доступен максимум <b>{limit}</b> кошелек в наблюдении.\n\n"
             f"Для безлимитного вотч-листа оформите подписку за звезды {E_STAR}",
-            reply_markup=get_sub_keyboard(await get_star_prices()),
+            reply_markup=get_sub_keyboard(await get_star_prices(), await get_usd_prices()),
             parse_mode="HTML"
         )
         await callback.answer()
@@ -515,7 +521,7 @@ async def process_add_wallet(user_id: int, address: str, message: Message, ton_c
             f"{E_REJECT} <b>Лимит исчерпан!</b>\n"
             f"Вам доступен максимум <b>{limit}</b> кошелек.\n\n"
             f"Оформите подписку {E_STAR} для добавления любого числа кошельков!",
-            reply_markup=get_sub_keyboard(await get_star_prices()),
+            reply_markup=get_sub_keyboard(await get_star_prices(), await get_usd_prices()),
             parse_mode="HTML"
         )
         return
@@ -560,21 +566,21 @@ async def show_watchlist(event: Message | CallbackQuery):
 
     if not wallets:
         text = f"{E_WATCH} <b>Ваш вотч-лист пуст.</b>\nДобавьте кошелек командой: <code>/watch UQ...</code>"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="add_wallet_btn")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[btn("➕ Добавить", cb="add_wallet_btn", icon="pencil")]])
     else:
         text = f"{E_TON} <b>Ваш вотч-лист ({len(wallets)}):</b>\n\n"
         kb_rows = []
         for idx, w in enumerate(wallets, start=1):
             label = (w.get("label") or "").strip()
-            name = label if label else short_addr(w['user_address'])
+            name = html.escape(label) if label else short_addr(w['user_address'])
             text += f"<b>{idx}.</b> <code>{name}</code>\n"
             text += f"    {E_CHART} Баланс: <code>{w['last_balance']:.4f} TON</code>\n\n"
             kb_rows.append([
-                InlineKeyboardButton(text=f"ℹ️ Инфо #{idx}", callback_data=f"info_w_{w['id']}"),
-                InlineKeyboardButton(text=f"❌ Удалить #{idx}", callback_data=f"del_w_{w['id']}")
+                btn(f"ℹ️ Инфо #{idx}", cb=f"info_w_{w['id']}", icon="info"),
+                btn(f"❌ Удалить #{idx}", cb=f"del_w_{w['id']}", icon="reject")
             ])
-        kb_rows.append([InlineKeyboardButton(text="➕ Добавить еще", callback_data="add_wallet_btn")])
-        kb_rows.append([InlineKeyboardButton(text="🔙 В меню", callback_data="back_to_main")])
+        kb_rows.append([btn("➕ Добавить еще", cb="add_wallet_btn", icon="pencil")])
+        kb_rows.append([btn("🔙 В меню", cb="back_to_main")])
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
     if isinstance(event, CallbackQuery):
@@ -606,12 +612,12 @@ async def cb_delete_watched_wallet(callback: CallbackQuery):
         return
 
     label = (wallet.get("label") or "").strip()
-    name = label if label else short_addr(wallet["user_address"])
+    name = html.escape(label) if label else short_addr(wallet["user_address"])
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"dely_w_{wallet_id}", style="danger")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="show_watchlist")]
+            [btn("✅ Да, удалить", cb=f"dely_w_{wallet_id}", style="danger", icon="ok")],
+            [btn("❌ Отмена", cb="show_watchlist", icon="reject")]
         ]
     )
     await callback.message.edit_text(
@@ -656,7 +662,7 @@ async def cb_wallet_info(callback: CallbackQuery):
         return
 
     label = (wallet.get("label") or "").strip()
-    name = label if label else short_addr(wallet["user_address"])
+    name = html.escape(label) if label else short_addr(wallet["user_address"])
     turnover = await db.get_turnover(wallet_id)
     added = wallet.get("created_at")
     added_str = datetime.fromtimestamp(added).strftime("%d.%m.%Y") if added else "—"
@@ -664,7 +670,7 @@ async def cb_wallet_info(callback: CallbackQuery):
     text = (
         f"{E_INFO} <b>Информация о кошельке</b>\n\n"
         f"{E_WATCH} <b>Имя:</b> <code>{name}</code>\n"
-        f"📍 <b>Адрес:</b> <code>{wallet['user_address']}</code>\n"
+        f"📍 <b>Адрес:</b> <code>{html.escape(str(wallet['user_address']))}</code>\n"
         f"{E_CHART} <b>Баланс:</b> <code>{wallet['last_balance']:.4f} TON</code>\n"
         f"{E_DATE} <b>В наблюдении с:</b> {added_str}\n\n"
         f"📊 <b>Оборот TON</b> <i>(приход / расход)</i>:\n"
@@ -678,10 +684,10 @@ async def cb_wallet_info(callback: CallbackQuery):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✏️ Название", callback_data=f"ren_w_{wallet_id}")],
-            [InlineKeyboardButton(text="📜 История", callback_data=f"hist_w_{wallet_id}")],
-            [InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_w_{wallet_id}")],
-            [InlineKeyboardButton(text="🔙 К списку", callback_data="show_watchlist")]
+            [btn("✏️ Название", cb=f"ren_w_{wallet_id}", icon="pencil")],
+            [btn("📜 История", cb=f"hist_w_{wallet_id}", icon="history")],
+            [btn("❌ Удалить", cb=f"del_w_{wallet_id}", icon="reject")],
+            [btn("🔙 К списку", cb="show_watchlist")]
         ]
     )
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -752,7 +758,7 @@ async def cb_wallet_history(callback: CallbackQuery):
 
     txs = await db.get_tx_log(wallet_id, limit=10)
     label = (wallet.get("label") or "").strip()
-    name = label if label else short_addr(wallet["user_address"])
+    name = html.escape(label) if label else short_addr(wallet["user_address"])
 
     if not txs:
         text = (
@@ -770,7 +776,7 @@ async def cb_wallet_history(callback: CallbackQuery):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 К инфо", callback_data=f"info_w_{wallet_id}")]
+            [btn("🔙 К инфо", cb=f"info_w_{wallet_id}")]
         ]
     )
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -784,11 +790,11 @@ async def cb_subscribe_menu(callback: CallbackQuery):
     usd_prices = await get_usd_prices()
     await callback.message.edit_text(
         f"{E_STAR} <b>Тарифы подписки на вотч-лист:</b>\n\n"
-        f"• <b>1 месяц</b> — <code>{prices['month']} {E_STAR}</code> / <code>${usd_prices['month']:.2f}</code>\n"
-        f"• <b>1 год</b> — <code>{prices['year']} {E_STAR}</code> / <code>${usd_prices['year']:.2f}</code>\n"
-        f"• <b>Навсегда</b> — <code>{prices['lifetime']} {E_STAR}</code> / <code>${usd_prices['lifetime']:.2f}</code>\n\n"
+        f"• <b>1 месяц</b> — <code>{prices['month']}</code> {E_STAR} / <code>${usd_prices['month']:.2f}</code>\n"
+        f"• <b>1 год</b> — <code>{prices['year']}</code> {E_STAR} / <code>${usd_prices['year']:.2f}</code>\n"
+        f"• <b>Навсегда</b> — <code>{prices['lifetime']}</code> {E_STAR} / <code>${usd_prices['lifetime']:.2f}</code>\n\n"
         f"{E_BULB} <i>С подпиской снимается лимит на 1 кошелек: можно добавлять неограниченное количество адресов.</i>\n\n"
-        f"{E_STAR} <i>Оплата звездами Telegram</i>  |  🪙 <i>криптой через 2328.io</i>",
+        f"{E_STAR} <i>Оплата звездами Telegram</i>  |  {E_JETTON} <i>криптой через 2328.io</i>",
         reply_markup=get_sub_keyboard(prices, usd_prices),
         parse_mode="HTML"
     )
@@ -837,14 +843,17 @@ async def cb_buy_crypto(callback: CallbackQuery, pay2328: Pay2328Client):
         await callback.answer("Не удалось создать счет. Попробуйте позже.", show_alert=True)
         return
 
-    await db.create_payment(order_id, callback.from_user.id, period, amount, invoice.get("uuid", ""))
+    if not await db.create_payment(order_id, callback.from_user.id, period, amount, invoice.get("uuid", "")):
+        # Счет создан в 2328, но не записан в БД — без записи поллер не активирует подписку
+        await callback.answer("Внутренняя ошибка при создании счета. Попробуйте позже.", show_alert=True)
+        return
 
     url = invoice.get("url")
     kb_rows = []
     if url:
-        kb_rows.append([InlineKeyboardButton(text="💳 Открыть счет", url=url, style="primary")])
-    kb_rows.append([InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"chkpay_{order_id}")])
-    kb_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="crypto_menu")])
+        kb_rows.append([btn("💳 Открыть счет", url=url, style="primary", icon="jetton")])
+    kb_rows.append([btn("🔄 Проверить оплату", cb=f"chkpay_{order_id}", icon="wait")])
+    kb_rows.append([btn("🔙 Назад", cb="crypto_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
     await callback.message.answer(
@@ -951,7 +960,7 @@ async def process_successful_payment(message: Message):
     await activate_subscription(message.bot, message.from_user.id, period)
 
 
-# --- ИНЛАЙН-РЕЖИМ (@tonancbot адрес) ---
+# --- ИНЛАЙН-РЕЖИМ (@tonancbot ...) ---
 def is_potential_ton_target(query: str) -> bool:
     """Проверяет, похож ли ввод на готовый адрес или домен."""
     q = query.strip().lower()
@@ -966,69 +975,185 @@ def is_potential_ton_target(query: str) -> bool:
     return False
 
 
-@router.inline_query()
-async def inline_query_handler(inline_query: InlineQuery, ton_client: TonApiClient):
-    query = inline_query.query.strip()
+def _inline_article(
+    article_id: str,
+    title: str,
+    description: str,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        id=article_id,
+        title=title,
+        description=description,
+        input_message_content=InputTextMessageContent(
+            message_text=text, parse_mode="HTML", disable_web_page_preview=True
+        ),
+        reply_markup=reply_markup,
+    )
+
+
+def _inline_help_article() -> InlineQueryResultArticle:
+    text = (
+        f"{E_BULB} <b>Что умеет @tonancbot в инлайне:</b>\n\n"
+        f"{E_GEAR} <b>Калькулятор</b> — <code>13 + 13</code>, <code>(2+3)*4</code>, <code>2^10</code>\n"
+        f"{E_SCALE} <b>Конвертер</b> — <code>123 gram rub</code>, <code>100 usd rub</code>, <code>5 ton usd</code>\n"
+        f"{E_TON} <b>Баланс кошелька</b> — адрес <code>UQ...</code>/<code>EQ...</code> или домен <code>wallet.ton</code>\n\n"
+        f"<i>Наберите @tonancbot и запрос в любом чате.</i>"
+    )
+    return _inline_article("help", "🧩 Возможности бота", "Калькулятор • Конвертер • Балансы TON", text)
+
+
+async def _answer_own_wallet(inline_query: InlineQuery, ton_client: TonApiClient):
+    """Пустой ввод: карточка первого кошелька из вотч-листа + подсказка."""
+    user = await db.get_user(inline_query.from_user.id)
+    user_key = user.get("custom_api_key") if user else None
+    wallets = await db.get_user_watchlist(inline_query.from_user.id)
+
     results = []
+    if wallets:
+        w = wallets[0]
+        acc = await ton_client.get_account(w["raw_address"], api_key=user_key)
+        bal = (acc.get("balance", 0) / 10**9) if acc else float(w.get("last_balance") or 0.0)
+        text = (
+            f"{E_TON} <b>Кошелек из вотч-листа</b>\n\n"
+            f"{E_LOC} <b>Адрес:</b> <code>{html.escape(str(w['user_address']))}</code>\n"
+            f"{E_CHART} <b>Баланс:</b> <code>{bal:.4f} TON</code>\n"
+            f"{E_LINK} <a href=\"https://tonviewer.com/{w['raw_address']}\">Tonviewer</a>"
+        )
+        results.append(
+            _inline_article(
+                "my_w",
+                f"💎 Мой кошелек: {bal:.4f} TON",
+                str(w["user_address"])[:60],
+                text,
+            )
+        )
+    else:
+        results.append(
+            _inline_article(
+                "no_wallet",
+                "💎 Ваш вотч-лист пуст",
+                "Добавьте кошелек в боте через /start",
+                f"{E_INFO} <b>Ваш вотч-лист пуст.</b>\n"
+                f"Добавьте кошелек в боте — и его баланс всегда будет под рукой в инлайне.",
+            )
+        )
+    results.append(_inline_help_article())
+    await inline_query.answer(results, cache_time=15, is_personal=True)
+
+
+async def _answer_calc(inline_query: InlineQuery, query: str):
+    """Калькулятор: 13 + 13, (2+3)*4, 2^10."""
+    expr_display = " ".join(query.split())
+    try:
+        value = try_calc(query)
+    except MathError as e:
+        await inline_query.answer(
+            [_inline_article(
+                "calc_err",
+                f"🧮 Ошибка: {e}",
+                expr_display[:60],
+                f"{E_WARN} <b>Не удалось вычислить</b> <code>{html.escape(expr_display)}</code>: {e}",
+            )],
+            cache_time=0,
+            is_personal=True,
+        )
+        return
+
+    result_str = fmt_num(value)
+    await inline_query.answer(
+        [_inline_article(
+            "calc",
+            f"🧮 {expr_display} = {result_str}",
+            "Калькулятор @tonancbot",
+            f"{E_GEAR} <b>{html.escape(expr_display)} = {result_str}</b>",
+        )],
+        cache_time=0,
+        is_personal=True,
+    )
+
+
+async def _answer_conversion(inline_query: InlineQuery, conv: tuple[float, str, str], ton_client: TonApiClient):
+    """Конвертер: 123 gram rub, 100 usd rub, 5 ton usd."""
+    amount, src_word, dst_word = conv
+    src = resolve_symbol(src_word)
+    dst = resolve_symbol(dst_word)
+
+    if not src or not dst:
+        bad = src_word if not src else dst_word
+        text = (
+            f"{E_WARN} <b>Неизвестная валюта или токен:</b> <code>{html.escape(bad)}</code>\n\n"
+            f"{E_JETTON} <b>Токены:</b> ton, gram, usdt, not, dogs, hmstr\n"
+            f"💵 <b>Валюты:</b> usd, eur, rub, uah, kzt, gbp, cny, jpy, aed, try, byn, pln, chf"
+        )
+        await inline_query.answer(
+            [_inline_article("conv_err", f"❓ Неизвестно: {bad}", "Конвертер @tonancbot", text)],
+            cache_time=0,
+            is_personal=True,
+        )
+        return
+
+    tokens = {sym for kind, sym in (src, dst) if kind == "token"}
+    fiats = {sym for kind, sym in (src, dst) if kind == "fiat"}
+    tokens.add("ton")  # кросс-курс для пары фиат-фиат
+    fiats.add("usd")   # кросс-курс для пары токен-токен
 
     user = await db.get_user(inline_query.from_user.id)
     user_key = user.get("custom_api_key") if user else None
+    rates = await ton_client.get_rates(sorted(tokens), sorted(fiats), api_key=user_key)
 
-    # 1. Если поле ввода пустое — предлагаем свой кошелек из вотч-листа
-    if not query:
-        wallets = await db.get_user_watchlist(inline_query.from_user.id)
-        if wallets:
-            w = wallets[0]
-            acc = await ton_client.get_account(w["raw_address"], api_key=user_key)
-            bal = (acc.get("balance", 0) / 10**9) if acc else w["last_balance"]
-            text = (
-                f"{E_TON} <b>Кошелек из вотч-листа</b>\n\n"
-                f"{E_LOC} <b>Адрес:</b> <code>{w['user_address']}</code>\n"
-                f"{E_CHART} <b>Баланс:</b> <code>{bal:.4f} TON</code>\n"
-                f"{E_LINK} <a href=\"https://tonviewer.com/{w['user_address']}\">Tonviewer</a>"
-            )
-            results.append(
-                InlineQueryResultArticle(
-                    id="my_w",
-                    title=f"💎 {short_addr(w['user_address'])}",
-                    description=f"Баланс: {bal:.4f} TON",
-                    input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML", disable_web_page_preview=True)
-                )
-            )
-        await inline_query.answer(results, cache_time=60, is_personal=True)
-        return
-
-    if not is_potential_ton_target(query):
-        results.append(
-            InlineQueryResultArticle(
-                id="typing_hint",
-                title="⏳ Введите адрес или домен .ton",
-                description="Поддерживаются: UQ..., EQ..., а также домены (например, wallet.ton)",
-                input_message_content=InputTextMessageContent(
-                    message_text=f"{E_BULB} Введите полный адрес (UQ... / EQ...) или домен (например, <code>wallet.ton</code>).",
-                    parse_mode="HTML"
-                )
-            )
+    result = convert_amount(amount, src, dst, rates)
+    if result is None:
+        text = f"{E_WARN} <b>Курс {src[1].upper()} → {dst[1].upper()} сейчас недоступен.</b>\nПопробуйте позже."
+        await inline_query.answer(
+            [_inline_article(
+                "conv_err",
+                f"❌ Курс {src[1].upper()} → {dst[1].upper()} не найден",
+                "Конвертер @tonancbot",
+                text,
+            )],
+            cache_time=15,
+            is_personal=True,
         )
-        await inline_query.answer(results, cache_time=30, is_personal=True)
         return
+
+    frm, to = src[1].upper(), dst[1].upper()
+    text = (
+        f"{E_SCALE} <b>{fmt_num(amount)} {frm} = {fmt_num(result)} {to}</b>\n\n"
+        f"1 {frm} ≈ {fmt_num(result / amount)} {to}"
+    )
+    await inline_query.answer(
+        [_inline_article(
+            "conv",
+            f"💱 {fmt_num(amount)} {frm} → {fmt_num(result)} {to}",
+            "Конвертер @tonancbot",
+            text,
+        )],
+        cache_time=30,
+        is_personal=True,
+    )
+
+
+async def _answer_wallet_card(inline_query: InlineQuery, query: str, ton_client: TonApiClient):
+    """Проверка кошелька по адресу или домену."""
+    user = await db.get_user(inline_query.from_user.id)
+    user_key = user.get("custom_api_key") if user else None
 
     acc_info = await ton_client.get_account(query, api_key=user_key)
     q_hash = hashlib.md5(query.encode()).hexdigest()
 
     if not acc_info:
-        results.append(
-            InlineQueryResultArticle(
-                id=q_hash,
-                title="❌ Кошелек или домен не найден",
-                description=f"Не удалось найти: {query}",
-                input_message_content=InputTextMessageContent(
-                    message_text=f"❌ Кошелек или домен <code>{query}</code> не найден в сети TON.",
-                    parse_mode="HTML"
-                )
-            )
+        await inline_query.answer(
+            [_inline_article(
+                q_hash,
+                "❌ Кошелек или домен не найден",
+                f"Не удалось найти: {query[:60]}",
+                f"{E_REJECT} Кошелек или домен <code>{html.escape(query)}</code> не найден в сети TON.",
+            )],
+            cache_time=30,
+            is_personal=True,
         )
-        await inline_query.answer(results, cache_time=30, is_personal=True)
         return
 
     bal = acc_info.get("balance", 0) / 10**9
@@ -1041,18 +1166,46 @@ async def inline_query_handler(inline_query: InlineQuery, ton_client: TonApiClie
         f"{E_CHART} <b>Баланс:</b> <code>{bal:.4f} TON</code>\n"
         f"{E_LINK} <a href=\"https://tonviewer.com/{raw_addr}\">Смотреть в Tonviewer</a>"
     )
-    btn = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔗 Открыть в Tonviewer", url=f"https://tonviewer.com/{raw_addr}")]
-        ]
+    card_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[btn("🔗 Открыть в Tonviewer", url=f"https://tonviewer.com/{raw_addr}", icon="link")]]
     )
-    results.append(
-        InlineQueryResultArticle(
-            id=q_hash,
-            title=f"💎 Баланс: {bal:.4f} TON{domain_label}",
-            description=f"Адрес: {short_addr(raw_addr)}",
-            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML", disable_web_page_preview=True),
-            reply_markup=btn
-        )
+    await inline_query.answer(
+        [_inline_article(
+            q_hash,
+            f"💎 Баланс: {bal:.4f} TON{domain_label}",
+            f"Адрес: {short_addr(raw_addr)}",
+            text,
+            reply_markup=card_kb,
+        )],
+        cache_time=60,
+        is_personal=True,
     )
-    await inline_query.answer(results, cache_time=60, is_personal=True)
+
+
+@router.inline_query()
+async def inline_query_handler(inline_query: InlineQuery, ton_client: TonApiClient):
+    query = inline_query.query.strip()
+
+    # 1. Пустой ввод — карточка своего кошелька + подсказка
+    if not query:
+        await _answer_own_wallet(inline_query, ton_client)
+        return
+
+    # 2. Калькулятор: 13 + 13, (2+3)*4, 2^10
+    if is_math_query(query):
+        await _answer_calc(inline_query, query)
+        return
+
+    # 3. Конвертер валют и токенов: 123 gram rub, 100 usd rub, 5 ton usd
+    conv = parse_conversion(query)
+    if conv:
+        await _answer_conversion(inline_query, conv, ton_client)
+        return
+
+    # 4. Кошелек по адресу или домену
+    if is_potential_ton_target(query):
+        await _answer_wallet_card(inline_query, query, ton_client)
+        return
+
+    # 5. Ничего не распознано — подсказка о возможностях
+    await inline_query.answer([_inline_help_article()], cache_time=15, is_personal=True)
