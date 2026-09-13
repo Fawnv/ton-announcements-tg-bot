@@ -1,6 +1,6 @@
 ---
 
-# 💎 TON Transaction Tracker & Watchlist Bot
+# 💎 TON Transaction Tracker & Watchlist Bot 
 
 Асинхронный Telegram-бот на **aiogram 3** и **TonAPI (v2)** для отслеживания входящих и исходящих транзакций в сети TON в реальном времени с поддержкой вотч-листа, доменов TON DNS, отображением баланса «ДО/ПОСЛЕ», конвертацией в фиатные валюты и монетизацией через **Telegram Stars**.
 
