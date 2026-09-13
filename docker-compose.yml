@@ -8,7 +8,6 @@ services:
     env_file:
       - .env
     volumes:
-      # Пробрасываем файл базы данных, чтобы сохранить данные пользователей
       - ./bot_users.db:/app/bot_users.db
     networks:
       - web-network
