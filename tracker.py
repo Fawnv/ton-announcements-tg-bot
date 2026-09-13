@@ -137,6 +137,9 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
     last_event_id = wallet.get("last_event_id")
     stored_balance = float(wallet.get("last_balance") or 0.0)
     user_key = wallet.get("custom_api_key")
+    min_in = float(wallet.get("min_incoming") or 0.0)
+    min_out = float(wallet.get("min_outgoing") or 0.0)
+    
 
     events = await ton_client.get_events(raw_address, limit=10, api_key=user_key)
     if not events:
@@ -219,6 +222,14 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
                 comment = transfer.get("comment", "")
 
                 is_in = recipient.lower() == raw_address.lower()
+
+                if is_in and min_in > 0 and amount_ton < min_in:
+                    continue #пропуск для входящего
+                if not is_in and min_out > 0 and amount_ton < min_out:
+                    continue #пропуск для исходящего
+
+
+
                 icon = E_IN if is_in else E_OUT
                 tx_title = "Входящий перевод TON" if is_in else "Исходящий перевод TON"
                 party_label = "От кого" if is_in else "Кому"

@@ -10,7 +10,7 @@ class Database:
 
     async def init(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
-            # 1. Таблица пользователей
+            # 1. Создаем таблицу пользователей (если ее нет)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
@@ -19,11 +19,13 @@ class Database:
                     sub_until INTEGER DEFAULT 0,
                     fiat_currency TEXT DEFAULT 'usd_rub',
                     raw_address TEXT DEFAULT '',
-                    user_address TEXT DEFAULT ''
+                    user_address TEXT DEFAULT '',
+                    min_incoming REAL DEFAULT 0.0,
+                    min_outgoing REAL DEFAULT 0.0
                 )
             """)
 
-            # 2. Таблица вотч-листа
+            # 2. Создаем таблицу вотч-листа (если ее нет)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,23 +38,27 @@ class Database:
                     UNIQUE(user_id, raw_address)
                 )
             """)
-
-            # 3. Безопасная миграция колонок
-            columns_to_check = [
-                "custom_api_key TEXT",
-                "sub_type TEXT DEFAULT 'free'",
-                "sub_until INTEGER DEFAULT 0",
-                "fiat_currency TEXT DEFAULT 'usd_rub'",
-                "raw_address TEXT DEFAULT ''",
-                "user_address TEXT DEFAULT ''"
-            ]
-            for col in columns_to_check:
-                try:
-                    await db.execute(f"ALTER TABLE users ADD COLUMN {col}")
-                except Exception:
-                    pass
-
             await db.commit()
+
+            # 3. Гарантированная миграция существующих таблиц через PRAGMA
+            async with db.execute("PRAGMA table_info(users)") as cursor:
+                existing_cols = [row[1] for row in await cursor.fetchall()]
+
+            needed_cols = [
+                ("custom_api_key", "TEXT"),
+                ("sub_type", "TEXT DEFAULT 'free'"),
+                ("sub_until", "INTEGER DEFAULT 0"),
+                ("fiat_currency", "TEXT DEFAULT 'usd_rub'"),
+                ("raw_address", "TEXT DEFAULT ''"),
+                ("user_address", "TEXT DEFAULT ''"),
+                ("min_incoming", "REAL DEFAULT 0.0"),
+                ("min_outgoing", "REAL DEFAULT 0.0")
+            ]
+
+            for col_name, col_type in needed_cols:
+                if col_name not in existing_cols:
+                    await db.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+                    await db.commit()
 
     async def get_user(self, user_id: int) -> Optional[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -96,6 +102,30 @@ class Database:
         user = await self.get_user(user_id)
         return (user.get("fiat_currency") if user else None) or "usd_rub"
 
+    async def set_user_filter_in(self, user_id: int, min_in: float) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO users (user_id, min_incoming, raw_address, user_address)
+                VALUES (?, ?, '', '')
+                ON CONFLICT(user_id) DO UPDATE SET min_incoming = excluded.min_incoming
+            """, (user_id, min_in))
+            await db.commit()
+
+    async def set_user_filter_out(self, user_id: int, min_out: float) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO users (user_id, min_outgoing, raw_address, user_address)
+                VALUES (?, ?, '', '')
+                ON CONFLICT(user_id) DO UPDATE SET min_outgoing = excluded.min_outgoing
+            """, (user_id, min_out))
+            await db.commit()
+
+    async def get_user_filters(self, user_id: int) -> tuple[float, float]:
+        user = await self.get_user(user_id)
+        if not user:
+            return 0.0, 0.0
+        return float(user.get("min_incoming") or 0.0), float(user.get("min_outgoing") or 0.0)
+
     async def add_to_watchlist(
         self, user_id: int, raw_address: str, user_address: str, last_event_id: str, last_balance: float
     ) -> bool:
@@ -132,7 +162,17 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
-                SELECT w.*, u.custom_api_key, u.fiat_currency
+                SELECT
+                    w.id,
+                    w.user_id,
+                    w.raw_address,
+                    w.user_address,
+                    w.last_event_id,
+                    w.last_balance,
+                    u.custom_api_key,
+                    u.fiat_currency,
+                    u.min_incoming,
+                    u.min_outgoing
                 FROM watchlist w
                 LEFT JOIN users u ON w.user_id = u.user_id
             """) as cursor:

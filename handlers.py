@@ -44,6 +44,8 @@ STAR_PRICE_LIFETIME = 1499
 class FormStates(StatesGroup):
     waiting_for_api_key = State()
     waiting_for_watch_address = State()
+    waiting_for_filter_in = State()
+    waiting_for_filter_out = State()
 
 
 def short_addr(addr: str) -> str:
@@ -77,9 +79,11 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="👀 Мой вотч-лист", callback_data="show_watchlist")],
             [InlineKeyboardButton(text="➕ Добавить кошелек", callback_data="add_wallet_btn")],
             [
-                InlineKeyboardButton(text="⚙️ Валюта цен", callback_data="settings_fiat"),
-                InlineKeyboardButton(text="⭐ Подписка", callback_data="subscribe_menu")
-            ]
+                InlineKeyboardButton(text="⚙️ Валюта", callback_data="settings_fiat"),
+		InlineKeyboardButton(text="🎯 Фильтры", callback_data="settings_filters")
+            ],
+               [InlineKeyboardButton(text="⭐ Подписка", callback_data="subscribe_menu")]
+            
         ]
     )
 
@@ -231,6 +235,102 @@ async def cb_set_fiat(callback: CallbackQuery):
     await db.set_user_fiat(callback.from_user.id, mode)
     await callback.answer("✅ Настройки валюты сохранены!")
     await callback.message.edit_reply_markup(reply_markup=get_fiat_keyboard(mode))
+
+# --- МЕНЮ ФИЛЬТРОВ СУММ ---
+def get_filters_keyboard(min_in: float, min_out: float) -> InlineKeyboardMarkup:
+    in_text = f"{min_in:.2f} TON" if min_in > 0 else "Все (0 TON)"
+    out_text = f"{min_out:.2f} TON" if min_out > 0 else "Все (0 TON)"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"📥 Мин. входящий: {in_text}", callback_data="set_filter_in_btn")],
+            [InlineKeyboardButton(text=f"📤 Мин. исходящий: {out_text}", callback_data="set_filter_out_btn")],
+            [InlineKeyboardButton(text="🔄 Сбросить фильтры", callback_data="reset_filters_btn")],
+            [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_main")]
+        ]
+    )
+
+@router.callback_query(F.data == "settings_filters")
+async def cb_settings_filters(callback: CallbackQuery):
+    min_in, min_out = await db.get_user_filters(callback.from_user.id)
+    text = (
+        "🎯 <b>Настройки фильтрации сумм:</b>\n\n"
+        "Вы можете скрыть мелкие переводы, чтобы бот не спамил уведомлениями.\n\n"
+        f"📥 <b>Порог входящих:</b> <code>{min_in:.2f} TON</code>\n"
+        f"📤 <b>Порог исходящих:</b> <code>{min_out:.2f} TON</code>\n\n"
+        "<i>Транзакции меньше выбранной суммы будут игнорироваться.</i>"
+    )
+    await callback.message.edit_text(text, reply_markup=get_filters_keyboard(min_in, min_out), parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data == "set_filter_in_btn")
+async def cb_set_filter_in(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(FormStates.waiting_for_filter_in)
+    await callback.message.answer(
+        "📥 Введите минимальную сумму для <b>входящих</b> транзакций в TON (например: <code>5</code> или <code>0.5</code>):\n\n"
+        "<i>Для отключения фильтра отправьте 0. Для отмены: /cancel</i>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.message(FormStates.waiting_for_filter_in)
+async def process_filter_in(message: Message, state: FSMContext):
+    if message.text and message.text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
+        return
+
+    try:
+        val = float(message.text.strip().replace(",", "."))
+        if val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректное положительное число (например: <code>5</code> или <code>2.5</code>):", parse_mode="HTML")
+        return
+
+    await db.set_user_filter_in(message.from_user.id, val)
+    await state.clear()
+    
+    status_text = f"от <b>{val:.2f} TON</b>" if val > 0 else "<b>выключен (все суммы)</b>"
+    await message.answer(f"✅ Фильтр входящих установлен: {status_text}!", reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "set_filter_out_btn")
+async def cb_set_filter_out(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(FormStates.waiting_for_filter_out)
+    await callback.message.answer(
+        "📤 Введите минимальную сумму для <b>исходящих</b> транзакций в TON (например: <code>2</code> или <code>10</code>):\n\n"
+        "<i>Для отключения фильтра отправьте 0. Для отмены: /cancel</i>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.message(FormStates.waiting_for_filter_out)
+async def process_filter_out(message: Message, state: FSMContext):
+    if message.text and message.text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
+        return
+
+    try:
+        val = float(message.text.strip().replace(",", "."))
+        if val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректное положительное число (например: <code>10</code> или <code>1.5</code>):", parse_mode="HTML")
+        return
+
+    await db.set_user_filter_out(message.from_user.id, val)
+    await state.clear()
+    
+    status_text = f"от <b>{val:.2f} TON</b>" if val > 0 else "<b>выключен (все суммы)</b>"
+    await message.answer(f"✅ Фильтр исходящих установлен: {status_text}!", reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "reset_filters_btn")
+async def cb_reset_filters(callback: CallbackQuery):
+    await db.set_user_filter_in(callback.from_user.id, 0.0)
+    await db.set_user_filter_out(callback.from_user.id, 0.0)
+    await callback.answer("✅ Фильтры сброшены!")
+    await callback.message.edit_reply_markup(reply_markup=get_filters_keyboard(0.0, 0.0))
 
 
 # --- ДОБАВЛЕНИЕ КОШЕЛЬКА В ВОТЧ-ЛИСТ (/watch) ---
