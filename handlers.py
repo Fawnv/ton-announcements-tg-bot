@@ -414,7 +414,7 @@ async def process_filter_in(message: Message, state: FSMContext):
 
     await db.set_user_filter_in(message.from_user.id, val)
     await state.clear()
-    
+
     status_text = f"от <b>{val:.2f} TON</b>" if val > 0 else "<b>выключен (все суммы)</b>"
     await message.answer(f"✅ Фильтр входящих установлен: {status_text}!", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
@@ -449,7 +449,7 @@ async def process_filter_out(message: Message, state: FSMContext):
 
     await db.set_user_filter_out(message.from_user.id, val)
     await state.clear()
-    
+
     status_text = f"от <b>{val:.2f} TON</b>" if val > 0 else "<b>выключен (все суммы)</b>"
     await message.answer(f"✅ Фильтр исходящих установлен: {status_text}!", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
@@ -1151,7 +1151,9 @@ async def _answer_wallet_card(inline_query: InlineQuery, query: str, ton_client:
                 f"Не удалось найти: {query[:60]}",
                 f"{E_REJECT} Кошелек или домен <code>{html.escape(query)}</code> не найден в сети TON.",
             )],
-            cache_time=30,
+            # Не кэшируем отрицательный результат: 429/5xx/timeout TonAPI
+            # не должен залипать в Telegram как "домен не найден".
+            cache_time=0,
             is_personal=True,
         )
         return
@@ -1209,3 +1211,4 @@ async def inline_query_handler(inline_query: InlineQuery, ton_client: TonApiClie
 
     # 5. Ничего не распознано — подсказка о возможностях
     await inline_query.answer([_inline_help_article()], cache_time=15, is_personal=True)
+
