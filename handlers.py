@@ -410,8 +410,9 @@ async def process_add_wallet(user_id: int, address: str, message: Message, ton_c
 
     events = await ton_client.get_events(raw_address, limit=1, api_key=user_key)
     last_event_id = events[0]["event_id"] if events else ""
+    last_event_ts = int(events[0].get("timestamp") or 0) if events else 0
 
-    success = await db.add_to_watchlist(user_id, raw_address, address, last_event_id, balance)
+    success = await db.add_to_watchlist(user_id, raw_address, address, last_event_id, balance, last_event_ts)
     if not success:
         await wait_msg.edit_text("ℹ️ Этот кошелек уже находится в вашем списке наблюдения!", parse_mode="HTML")
         return

@@ -34,6 +34,7 @@ class Database:
                     user_address TEXT NOT NULL,
                     last_event_id TEXT,
                     last_balance REAL DEFAULT 0.0,
+                    last_event_ts INTEGER DEFAULT 0,
                     created_at INTEGER,
                     UNIQUE(user_id, raw_address)
                 )
@@ -58,6 +59,19 @@ class Database:
             for col_name, col_type in needed_cols:
                 if col_name not in existing_cols:
                     await db.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+                    await db.commit()
+
+            # 4. Миграция колонок вотч-листа
+            async with db.execute("PRAGMA table_info(watchlist)") as cursor:
+                existing_watch_cols = [row[1] for row in await cursor.fetchall()]
+
+            needed_watch_cols = [
+                ("last_event_ts", "INTEGER DEFAULT 0")
+            ]
+
+            for col_name, col_type in needed_watch_cols:
+                if col_name not in existing_watch_cols:
+                    await db.execute(f"ALTER TABLE watchlist ADD COLUMN {col_name} {col_type}")
                     await db.commit()
 
     async def get_user(self, user_id: int) -> Optional[dict[str, Any]]:
@@ -127,14 +141,15 @@ class Database:
         return float(user.get("min_incoming") or 0.0), float(user.get("min_outgoing") or 0.0)
 
     async def add_to_watchlist(
-        self, user_id: int, raw_address: str, user_address: str, last_event_id: str, last_balance: float
+        self, user_id: int, raw_address: str, user_address: str, last_event_id: str, last_balance: float,
+        last_event_ts: int = 0
     ) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 await db.execute("""
-                    INSERT INTO watchlist (user_id, raw_address, user_address, last_event_id, last_balance, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (user_id, raw_address, user_address, last_event_id, last_balance, int(time.time())))
+                    INSERT INTO watchlist (user_id, raw_address, user_address, last_event_id, last_balance, last_event_ts, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, raw_address, user_address, last_event_id, last_balance, last_event_ts, int(time.time())))
                 await db.commit()
                 return True
             except Exception:
@@ -169,6 +184,7 @@ class Database:
                     w.user_address,
                     w.last_event_id,
                     w.last_balance,
+                    w.last_event_ts,
                     u.custom_api_key,
                     u.fiat_currency,
                     u.min_incoming,
@@ -179,11 +195,11 @@ class Database:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in rows]
 
-    async def update_watched_last_event_and_balance(self, wallet_id: int, last_event_id: str, last_balance: float) -> None:
+    async def update_watched_last_event_and_balance(self, wallet_id: int, last_event_id: str, last_balance: float, last_event_ts: int = 0) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE watchlist SET last_event_id = ?, last_balance = ? WHERE id = ?",
-                (last_event_id, last_balance, wallet_id)
+                "UPDATE watchlist SET last_event_id = ?, last_balance = ?, last_event_ts = ? WHERE id = ?",
+                (last_event_id, last_balance, last_event_ts, wallet_id)
             )
             await db.commit()
 

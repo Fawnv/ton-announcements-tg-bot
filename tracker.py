@@ -135,6 +135,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
     raw_address = wallet["raw_address"]
     user_address = wallet["user_address"]
     last_event_id = wallet.get("last_event_id")
+    last_event_ts = int(wallet.get("last_event_ts") or 0)
     stored_balance = float(wallet.get("last_balance") or 0.0)
     user_key = wallet.get("custom_api_key")
     min_in = float(wallet.get("min_incoming") or 0.0)
@@ -148,20 +149,34 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
     acc_info = await ton_client.get_account(raw_address, api_key=user_key)
     current_balance = (acc_info.get("balance", 0) / 10**9) if acc_info else stored_balance
 
+    newest_ts = int(events[0].get("timestamp") or 0)
+
     if not last_event_id:
-        await db.update_watched_last_event_and_balance(wallet_id, events[0]["event_id"], current_balance)
+        await db.update_watched_last_event_and_balance(wallet_id, events[0]["event_id"], current_balance, newest_ts)
         return
 
     if events[0]["event_id"] == last_event_id:
         if abs(stored_balance - current_balance) > 1e-6:
-            await db.update_watched_last_event_and_balance(wallet_id, last_event_id, current_balance)
+            await db.update_watched_last_event_and_balance(wallet_id, last_event_id, current_balance, newest_ts)
         return
 
     new_events = []
+    last_id_found = False
     for ev in events:
         if ev["event_id"] == last_event_id:
+            last_id_found = True
             break
         new_events.append(ev)
+
+    if not last_id_found:
+        # last_event_id выпал из окна последних событий (даунтайм бота, всплеск
+        # транзакций, переиндексация события в TonAPI). Чтобы не заспамить
+        # пользователя старой историей, берем только события новее времени
+        # последней обработки.
+        if last_event_ts > 0:
+            new_events = [ev for ev in events if ev.get("timestamp", 0) > last_event_ts]
+        else:
+            new_events = []
 
     new_events.reverse()
 
@@ -345,7 +360,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
                 except Exception as e:
                     logger.error(f"Ошибка отправки Jetton уведомления: {e}")
 
-    await db.update_watched_last_event_and_balance(wallet_id, events[0]["event_id"], current_balance)
+    await db.update_watched_last_event_and_balance(wallet_id, events[0]["event_id"], current_balance, newest_ts)
 
 async def start_tx_tracker(bot: Bot, db: Database, ton_client: TonApiClient, interval: int = 20):
     logger.info("Фоновый трекер вотч-листа запущен.")
