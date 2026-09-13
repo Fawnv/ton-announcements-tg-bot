@@ -33,13 +33,11 @@ class WhitelistMiddleware(BaseMiddleware):
         if user.id in self.whitelist:
             return await handler(event, data)
 
-        # 2. Проверяем, ввел ли фри-пользователь свой собственный TonAPI ключ
         user_db = await db.get_user(user.id)
         has_custom_key = bool(user_db and user_db.get("custom_api_key"))
         if has_custom_key:
             return await handler(event, data)
 
-        # 3. Разрешаем процесс ввода ключа и нажатие кнопки активации
         state = data.get("state")
         current_state = await state.get_state() if state else None
 
@@ -49,7 +47,6 @@ class WhitelistMiddleware(BaseMiddleware):
         if isinstance(event, CallbackQuery) and event.data == "activate_by_key":
             return await handler(event, data)
 
-        # 4. Если ключа нет - требуем его ввести
         unlock_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🔑 Ввести свой TonAPI ключ", callback_data="activate_by_key")],
