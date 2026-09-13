@@ -63,7 +63,8 @@ class Database:
                 existing_watch_cols = [row[1] for row in await cursor.fetchall()]
 
             needed_watch_cols = [
-                ("last_event_ts", "INTEGER DEFAULT 0")
+                ("last_event_ts", "INTEGER DEFAULT 0"),
+                ("label", "TEXT DEFAULT ''")
             ]
 
             for col_name, col_type in needed_watch_cols:
@@ -78,6 +79,24 @@ class Database:
                     value TEXT
                 )
             """)
+            await db.commit()
+
+            # 6. Журнал транзакций по вотч-листу (для истории и оборотов)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS tx_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    wallet_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    ts INTEGER NOT NULL,
+                    is_in INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    kind TEXT DEFAULT 'ton',
+                    symbol TEXT DEFAULT '',
+                    event_id TEXT DEFAULT '',
+                    FOREIGN KEY (wallet_id) REFERENCES watchlist(id) ON DELETE CASCADE
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tx_log_wallet ON tx_log(wallet_id, ts)")
             await db.commit()
 
     async def get_user(self, user_id: int) -> Optional[dict[str, Any]]:
@@ -163,8 +182,85 @@ class Database:
 
     async def remove_from_watchlist(self, user_id: int, wallet_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM tx_log WHERE wallet_id = ? AND user_id = ?", (wallet_id, user_id))
             await db.execute("DELETE FROM watchlist WHERE id = ? AND user_id = ?", (wallet_id, user_id))
             await db.commit()
+
+    async def get_user_wallet(self, user_id: int, wallet_id: int) -> Optional[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM watchlist WHERE id = ? AND user_id = ?", (wallet_id, user_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def set_wallet_label(self, user_id: int, wallet_id: int, label: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE watchlist SET label = ? WHERE id = ? AND user_id = ?",
+                (label, wallet_id, user_id)
+            )
+            await db.commit()
+
+    # --- ЖУРНАЛ ТРАНЗАКЦИЙ ---
+
+    async def add_tx_log(self, user_id: int, wallet_id: int, ts: int, is_in: bool, amount: float,
+                         kind: str = "ton", symbol: str = "", event_id: str = "") -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO tx_log (wallet_id, user_id, ts, is_in, amount, kind, symbol, event_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (wallet_id, user_id, ts, 1 if is_in else 0, amount, kind, symbol, event_id)
+            )
+            await db.commit()
+
+    async def get_tx_log(self, wallet_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM tx_log WHERE wallet_id = ? ORDER BY ts DESC, id DESC LIMIT ?",
+                (wallet_id, limit)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def get_turnover(self, wallet_id: int) -> dict[str, dict[str, float]]:
+        """Оборот TON по периодам: today / yesterday / week / month / all.
+
+        Возвращает {период: {"in": сумма входящих, "out": сумма исходящих}}.
+        Учитываются только TON-переводы (kind='ton')."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT ts, is_in, amount FROM tx_log WHERE wallet_id = ? AND kind = 'ton'",
+                (wallet_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        now = int(time.time())
+        today0 = now - (now % 86400)
+        yesterday0 = today0 - 86400
+        week0 = now - 7 * 86400
+        month0 = now - 30 * 86400
+
+        periods = ["today", "yesterday", "week", "month", "all"]
+        result = {p: {"in": 0.0, "out": 0.0} for p in periods}
+
+        for row in rows:
+            ts, is_in, amount = row["ts"], bool(row["is_in"]), row["amount"]
+            direction = "in" if is_in else "out"
+            result["all"][direction] += amount
+            if ts >= today0:
+                result["today"][direction] += amount
+            elif ts >= yesterday0:
+                result["yesterday"][direction] += amount
+            if ts >= week0:
+                result["week"][direction] += amount
+            if ts >= month0:
+                result["month"][direction] += amount
+
+        return result
 
     async def get_user_watchlist(self, user_id: int) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -188,6 +284,7 @@ class Database:
                     w.user_id,
                     w.raw_address,
                     w.user_address,
+                    w.label,
                     w.last_event_id,
                     w.last_balance,
                     w.last_event_ts,

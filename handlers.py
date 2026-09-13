@@ -21,6 +21,7 @@ from aiogram.fsm.context import FSMContext
 from config import WHITELIST_USER_IDS, ADMIN_IDS
 from database import db
 from ton_api import TonApiClient
+from tracker import parse_fiat_currencies
 
 router = Router()
 
@@ -63,6 +64,7 @@ class FormStates(StatesGroup):
     waiting_for_watch_address = State()
     waiting_for_filter_in = State()
     waiting_for_filter_out = State()
+    waiting_for_wallet_label = State()
 
 
 def short_addr(addr: str) -> str:
@@ -116,19 +118,21 @@ def get_sub_keyboard(prices: dict[str, int]) -> InlineKeyboardMarkup:
     )
 
 
-def get_fiat_keyboard(current: str) -> InlineKeyboardMarkup:
-    modes = [
-        ("usd", "💵 Только USD"),
-        ("eur", "💶 Только EUR"),
-        ("rub", "🪙 Только RUB"),
-        ("usd_rub", "🇺🇸🇷🇺 USD + RUB"),
-        ("all", "🌍 Сразу USD EUR RUB"),
-        ("off", "❌ Выключить")
-    ]
+FIAT_OPTIONS = [
+    ("usd", "💵 USD"),
+    ("eur", "💶 EUR"),
+    ("rub", "🪙 RUB"),
+]
+
+
+def get_fiat_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
+    """Тогл-меню: 3 кнопки-валюты. Нажал — включил, нажал выбранное — выключил."""
     rows = []
-    for mode_id, label in modes:
-        check = " ✅" if current == mode_id else ""
-        rows.append([InlineKeyboardButton(text=f"{label}{check}", callback_data=f"set_fiat_{mode_id}")])
+    for code, label in FIAT_OPTIONS:
+        mark = "✅ " if code in selected else "▫️ "
+        rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"toggle_fiat_{code}")])
+    state = " + ".join(c.upper() for c in selected) if selected else "выключено"
+    rows.append([InlineKeyboardButton(text=f"🔴 Выключить цены", callback_data="toggle_fiat_off")])
     rows.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -158,7 +162,11 @@ async def cb_activate_by_key(callback: CallbackQuery, state: FSMContext):
 
 @router.message(FormStates.waiting_for_api_key)
 async def process_user_api_key(message: Message, state: FSMContext, ton_client: TonApiClient):
-    if message.text and message.text.strip() == "/cancel":
+    if not message.text:
+        await message.answer("❌ Ключ должен быть текстом. Отправьте ключ сообщением или /cancel.")
+        return
+
+    if message.text.strip() == "/cancel":
         await state.clear()
         await message.answer("❌ Ввод ключа отменен.")
         return
@@ -236,23 +244,49 @@ async def cb_back_to_main(callback: CallbackQuery, state: FSMContext):
 # --- НАСТРОЙКИ ВАЛЮТЫ ---
 @router.callback_query(F.data == "settings_fiat")
 async def cb_settings_fiat(callback: CallbackQuery):
-    user_fiat = await db.get_user_fiat(callback.from_user.id)
+    selected = parse_fiat_currencies(await db.get_user_fiat(callback.from_user.id))
+    state = " + ".join(c.upper() for c in selected) if selected else "выключено"
     await callback.message.edit_text(
         "⚙️ <b>Настройки отображения цен:</b>\n\n"
-        "Выберите, в каких фиатных валютах пересчитывать суммы транзакций:\n"
-        "<i>Пример: 15.0000 TON (20.70 USD | 17.85 EUR | 1742.40 RUB)</i>",
-        reply_markup=get_fiat_keyboard(user_fiat),
+        f"Выбрано: <b>{state}</b>\n\n"
+        "Нажмите на валюту, чтобы включить её. Нажмите ещё раз — выключить.\n"
+        "<i>Пример: 15.0000 TON (20.70 USD | 1742.40 RUB)</i>",
+        reply_markup=get_fiat_keyboard(selected),
         parse_mode="HTML"
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("set_fiat_"))
-async def cb_set_fiat(callback: CallbackQuery):
-    mode = callback.data.replace("set_fiat_", "")
-    await db.set_user_fiat(callback.from_user.id, mode)
-    await callback.answer("✅ Настройки валюты сохранены!")
-    await callback.message.edit_reply_markup(reply_markup=get_fiat_keyboard(mode))
+@router.callback_query(F.data.startswith("toggle_fiat_"))
+async def cb_toggle_fiat(callback: CallbackQuery):
+    code = callback.data.replace("toggle_fiat_", "")
+    selected = parse_fiat_currencies(await db.get_user_fiat(callback.from_user.id))
+
+    if code == "off":
+        selected = []
+        await callback.answer("🔴 Цены выключены")
+    elif code in selected:
+        selected.remove(code)
+        await callback.answer(f"▫️ {code.upper()} выключена")
+    else:
+        selected.append(code)
+        await callback.answer(f"✅ {code.upper()} включена")
+
+    # Пустой набор храним как "off", иначе get_user_fiat вернет дефолт
+    await db.set_user_fiat(callback.from_user.id, ",".join(selected) if selected else "off")
+
+    state = " + ".join(c.upper() for c in selected) if selected else "выключено"
+    try:
+        await callback.message.edit_text(
+            "⚙️ <b>Настройки отображения цен:</b>\n\n"
+            f"Выбрано: <b>{state}</b>\n\n"
+            "Нажмите на валюту, чтобы включить её. Нажмите ещё раз — выключить.\n"
+            "<i>Пример: 15.0000 TON (20.70 USD | 1742.40 RUB)</i>",
+            reply_markup=get_fiat_keyboard(selected),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
 # --- МЕНЮ ФИЛЬТРОВ СУММ ---
 def get_filters_keyboard(min_in: float, min_out: float) -> InlineKeyboardMarkup:
@@ -293,7 +327,11 @@ async def cb_set_filter_in(callback: CallbackQuery, state: FSMContext):
 
 @router.message(FormStates.waiting_for_filter_in)
 async def process_filter_in(message: Message, state: FSMContext):
-    if message.text and message.text.strip() == "/cancel":
+    if not message.text:
+        await message.answer("❌ Сумма должна быть числом. Отправьте текстом или /cancel.")
+        return
+
+    if message.text.strip() == "/cancel":
         await state.clear()
         await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
         return
@@ -324,7 +362,11 @@ async def cb_set_filter_out(callback: CallbackQuery, state: FSMContext):
 
 @router.message(FormStates.waiting_for_filter_out)
 async def process_filter_out(message: Message, state: FSMContext):
-    if message.text and message.text.strip() == "/cancel":
+    if not message.text:
+        await message.answer("❌ Сумма должна быть числом. Отправьте текстом или /cancel.")
+        return
+
+    if message.text.strip() == "/cancel":
         await state.clear()
         await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
         return
@@ -389,7 +431,11 @@ async def cb_add_wallet_btn(callback: CallbackQuery, state: FSMContext):
 
 @router.message(FormStates.waiting_for_watch_address)
 async def form_watch_address(message: Message, state: FSMContext, ton_client: TonApiClient):
-    if message.text and message.text.strip() == "/cancel":
+    if not message.text:
+        await message.answer("❌ Адрес должен быть текстом. Отправьте адрес сообщением или /cancel.")
+        return
+
+    if message.text.strip() == "/cancel":
         await state.clear()
         await message.answer("❌ Действие отменено.", reply_markup=get_main_keyboard())
         return
@@ -457,9 +503,14 @@ async def show_watchlist(event: Message | CallbackQuery):
         text = f"{E_TON} <b>Ваш вотч-лист ({len(wallets)}):</b>\n\n"
         kb_rows = []
         for idx, w in enumerate(wallets, start=1):
-            text += f"<b>{idx}.</b> <code>{short_addr(w['user_address'])}</code>\n"
+            label = (w.get("label") or "").strip()
+            name = label if label else short_addr(w['user_address'])
+            text += f"<b>{idx}.</b> <code>{name}</code>\n"
             text += f"    {E_CHART} Баланс: <code>{w['last_balance']:.4f} TON</code>\n\n"
-            kb_rows.append([InlineKeyboardButton(text=f"❌ Удалить #{idx}", callback_data=f"del_w_{w['id']}")])
+            kb_rows.append([
+                InlineKeyboardButton(text=f"ℹ️ Инфо #{idx}", callback_data=f"info_w_{w['id']}"),
+                InlineKeyboardButton(text=f"❌ Удалить #{idx}", callback_data=f"del_w_{w['id']}")
+            ])
         kb_rows.append([InlineKeyboardButton(text="➕ Добавить еще", callback_data="add_wallet_btn")])
         kb_rows.append([InlineKeyboardButton(text="🔙 В меню", callback_data="back_to_main")])
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
@@ -471,12 +522,197 @@ async def show_watchlist(event: Message | CallbackQuery):
         await event.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
+def _parse_wallet_callback(data: str, prefix: str) -> int | None:
+    """Безопасно достает wallet_id из callback_data вида prefix_<id>."""
+    try:
+        return int(data.replace(prefix, ""))
+    except ValueError:
+        return None
+
+
+# --- УДАЛЕНИЕ С ПОДТВЕРЖДЕНИЕМ ---
 @router.callback_query(F.data.startswith("del_w_"))
 async def cb_delete_watched_wallet(callback: CallbackQuery):
-    wallet_id = int(callback.data.split("_")[2])
+    wallet_id = _parse_wallet_callback(callback.data, "del_w_")
+    if wallet_id is None:
+        await callback.answer("Ошибка запроса", show_alert=True)
+        return
+
+    wallet = await db.get_user_wallet(callback.from_user.id, wallet_id)
+    if not wallet:
+        await callback.answer("Кошелек не найден", show_alert=True)
+        return
+
+    label = (wallet.get("label") or "").strip()
+    name = label if label else short_addr(wallet["user_address"])
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"dely_w_{wallet_id}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="show_watchlist")]
+        ]
+    )
+    await callback.message.edit_text(
+        f"⚠️ Точно удалить кошелек <code>{name}</code> из наблюдения?\n\n"
+        "<i>История транзакций и обороты по нему также будут удалены.</i>",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("dely_w_"))
+async def cb_delete_watched_wallet_confirm(callback: CallbackQuery):
+    wallet_id = _parse_wallet_callback(callback.data, "dely_w_")
+    if wallet_id is None:
+        await callback.answer("Ошибка запроса", show_alert=True)
+        return
+
     await db.remove_from_watchlist(callback.from_user.id, wallet_id)
     await callback.answer("Кошелек удален из наблюдения")
     await show_watchlist(callback)
+
+
+# --- ИНФОРМАЦИЯ О КОШЕЛЬКЕ (обороты, история, имя) ---
+def _fmt_turnover_row(label: str, stats: dict[str, float]) -> str:
+    return (
+        f"  • <b>{label}:</b> "
+        f"<code>+{stats['in']:.4f} / -{stats['out']:.4f} TON</code>\n"
+    )
+
+
+@router.callback_query(F.data.startswith("info_w_"))
+async def cb_wallet_info(callback: CallbackQuery):
+    wallet_id = _parse_wallet_callback(callback.data, "info_w_")
+    if wallet_id is None:
+        await callback.answer("Ошибка запроса", show_alert=True)
+        return
+
+    wallet = await db.get_user_wallet(callback.from_user.id, wallet_id)
+    if not wallet:
+        await callback.answer("Кошелек не найден", show_alert=True)
+        return
+
+    label = (wallet.get("label") or "").strip()
+    name = label if label else short_addr(wallet["user_address"])
+    turnover = await db.get_turnover(wallet_id)
+    added = wallet.get("created_at")
+    added_str = datetime.fromtimestamp(added).strftime("%d.%m.%Y") if added else "—"
+
+    text = (
+        f"ℹ️ <b>Информация о кошельке</b>\n\n"
+        f"👀 <b>Имя:</b> <code>{name}</code>\n"
+        f"📍 <b>Адрес:</b> <code>{wallet['user_address']}</code>\n"
+        f"{E_CHART} <b>Баланс:</b> <code>{wallet['last_balance']:.4f} TON</code>\n"
+        f"📅 <b>В наблюдении с:</b> {added_str}\n\n"
+        f"📊 <b>Оборот TON</b> <i>(приход / расход)</i>:\n"
+        + _fmt_turnover_row("Сегодня", turnover["today"])
+        + _fmt_turnover_row("Вчера", turnover["yesterday"])
+        + _fmt_turnover_row("Неделя", turnover["week"])
+        + _fmt_turnover_row("Месяц", turnover["month"])
+        + _fmt_turnover_row("За все время", turnover["all"])
+        + "\n<i>Оборот считается с момента добавления кошелька в наблюдение.</i>"
+    )
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Название", callback_data=f"ren_w_{wallet_id}")],
+            [InlineKeyboardButton(text="📜 История", callback_data=f"hist_w_{wallet_id}")],
+            [InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_w_{wallet_id}")],
+            [InlineKeyboardButton(text="🔙 К списку", callback_data="show_watchlist")]
+        ]
+    )
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+# --- КАСТОМНОЕ ИМЯ КОШЕЛЬКА ---
+@router.callback_query(F.data.startswith("ren_w_"))
+async def cb_rename_wallet(callback: CallbackQuery, state: FSMContext):
+    wallet_id = _parse_wallet_callback(callback.data, "ren_w_")
+    if wallet_id is None:
+        await callback.answer("Ошибка запроса", show_alert=True)
+        return
+
+    wallet = await db.get_user_wallet(callback.from_user.id, wallet_id)
+    if not wallet:
+        await callback.answer("Кошелек не найден", show_alert=True)
+        return
+
+    await state.set_state(FormStates.waiting_for_wallet_label)
+    await state.update_data(wallet_id=wallet_id)
+    await callback.message.answer(
+        "✏️ Отправьте новое имя для кошелька (до 32 символов):\n\n"
+        "<i>Для отмены отправьте /cancel. Чтобы убрать имя — отправьте 0</i>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(FormStates.waiting_for_wallet_label)
+async def process_wallet_label(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Имя должно быть текстом. Попробуйте еще раз или /cancel.")
+        return
+
+    if message.text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Переименование отменено.")
+        return
+
+    data = await state.get_data()
+    wallet_id = data.get("wallet_id")
+    await state.clear()
+
+    if not wallet_id:
+        await message.answer("❌ Ошибка состояния, попробуйте заново.", reply_markup=get_main_keyboard())
+        return
+
+    label = "" if message.text.strip() == "0" else message.text.strip()[:32]
+    await db.set_wallet_label(message.from_user.id, wallet_id, label)
+
+    status = f"<code>{label}</code>" if label else "имя убрано (показывается адрес)"
+    await message.answer(f"✅ Готово: {status}", reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+
+# --- ИСТОРИЯ ТРАНЗАКЦИЙ КОШЕЛЬКА ---
+@router.callback_query(F.data.startswith("hist_w_"))
+async def cb_wallet_history(callback: CallbackQuery):
+    wallet_id = _parse_wallet_callback(callback.data, "hist_w_")
+    if wallet_id is None:
+        await callback.answer("Ошибка запроса", show_alert=True)
+        return
+
+    wallet = await db.get_user_wallet(callback.from_user.id, wallet_id)
+    if not wallet:
+        await callback.answer("Кошелек не найден", show_alert=True)
+        return
+
+    txs = await db.get_tx_log(wallet_id, limit=10)
+    label = (wallet.get("label") or "").strip()
+    name = label if label else short_addr(wallet["user_address"])
+
+    if not txs:
+        text = (
+            f"📜 <b>История: {name}</b>\n\n"
+            "Транзакций пока не было (или бот их еще не зафиксировал)."
+        )
+    else:
+        text = f"📜 <b>История: {name}</b> <i>(последние {len(txs)})</i>\n\n"
+        for tx in txs:
+            icon = "📥" if tx["is_in"] else "📤"
+            sign = "+" if tx["is_in"] else "-"
+            dt = datetime.fromtimestamp(tx["ts"]).strftime("%d.%m %H:%M")
+            kind = {"ton": "TON", "jetton": tx.get("symbol") or "token", "stake": "stake"}.get(tx["kind"], tx["kind"])
+            text += f"{icon} {sign}{tx['amount']:.4f} {kind} — {dt}\n"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 К инфо", callback_data=f"info_w_{wallet_id}")]
+        ]
+    )
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
 
 
 # --- ОПЛАТА ЗВЕЗДАМИ (TELEGRAM STARS) ---

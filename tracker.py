@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+import time
 from datetime import datetime, timezone
 from aiogram import Bot
 
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # --- Премиум-эмодзи ---
 E_COMMENT = '<tg-emoji emoji-id="5443038326535759644">💬</tg-emoji>'
-E_IN      = '<tg-emoji emoji-id="5443127283898405358">📥</tg-emoji>'
+E_IN      = '<tg-emoji emoji-id="5445355530111437729">📥</tg-emoji>'
 E_OUT     = '<tg-emoji emoji-id="5445355530111437729">📤</tg-emoji>'
 E_TON     = '<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji>'
 E_USER    = '<tg-emoji emoji-id="5258011929993026890">👤</tg-emoji>'
@@ -21,9 +22,37 @@ E_GREEN   = '<tg-emoji emoji-id="5416081784641168838">🟢</tg-emoji>'
 E_RED     = '<tg-emoji emoji-id="5411225014148014586">🔴</tg-emoji>'
 E_LINK    = '<tg-emoji emoji-id="5271604874419647061">🔗</tg-emoji>'
 E_LOC     = '<tg-emoji emoji-id="5391032818111363540">📍</tg-emoji>'
+E_NFT     = '<tg-emoji emoji-id="5237846821763520275">🖼</tg-emoji>'
+E_STAKE   = '<tg-emoji emoji-id="5446042735909124987">🥩</tg-emoji>'
+E_GEAR    = '<tg-emoji emoji-id="5465305287370261216">⚙️</tg-emoji>'
+E_SCALE   = '<tg-emoji emoji-id="5450401490725681801">⚖️</tg-emoji>'
 
 STATUS_WAITING = "⏳ <b>Статус:</b> <i>Отправлено, проверяем зачисление на адрес получателя...</i>"
 STATUS_DELIVERED = "✅ <b>Статус:</b> <b>Средства успешно зачислены на кошелек получателя!</b>"
+
+# Легаси-значения fiat_currency, сохраненные до перехода на набор валют
+_LEGACY_FIAT = {
+    "usd": "usd",
+    "eur": "eur",
+    "rub": "rub",
+    "usd_rub": "usd,rub",
+    "all": "usd,eur,rub",
+    "off": "",
+}
+_VALID_FIAT = ("usd", "eur", "rub")
+
+
+def parse_fiat_currencies(raw: str | None) -> list[str]:
+    """Нормализует настройку валют: 'usd,rub' -> ['usd','rub'].
+
+    Понимает старые режимы (usd_rub, all, off) и дефолт usd_rub."""
+    if not raw:
+        return ["usd", "rub"]
+    raw = raw.strip().lower()
+    if raw in _LEGACY_FIAT:
+        raw = _LEGACY_FIAT[raw]
+    return [c for c in raw.split(",") if c in _VALID_FIAT]
+
 
 def short_addr(addr: str) -> str:
     if len(addr) > 16:
@@ -37,29 +66,18 @@ def format_ton_diff(delta: float) -> str:
         return f"{E_GREEN} +{delta:.4f} TON"
     return f"{E_RED} {delta:.4f} TON"
 
-def format_fiat_amount(amount_ton: float, rates: dict[str, float], mode: str) -> str:
-    """Форматирует строку с ценой в фиате по выбранному режиму."""
-    if mode == "off" or not rates:
+def format_fiat_amount(amount_ton: float, rates: dict[str, float], currencies: list[str]) -> str:
+    """Форматирует строку с ценой в выбранных пользователем валютах."""
+    if not currencies or not rates:
         return ""
 
-    usd = rates.get("USD", 0.0)
-    eur = rates.get("EUR", 0.0)
-    rub = rates.get("RUB", 0.0)
-
     parts = []
-    if mode == "usd" and usd:
-        parts.append(f"{amount_ton * usd:.2f} USD")
-    elif mode == "eur" and eur:
-        parts.append(f"{amount_ton * eur:.2f} EUR")
-    elif mode == "rub" and rub:
-        parts.append(f"{amount_ton * rub:.2f} RUB")
-    elif mode == "usd_rub":
-        if usd: parts.append(f"{amount_ton * usd:.2f} USD")
-        if rub: parts.append(f"{amount_ton * rub:.2f} RUB")
-    elif mode == "all":
-        if usd: parts.append(f"{amount_ton * usd:.2f} USD")
-        if eur: parts.append(f"{amount_ton * eur:.2f} EUR")
-        if rub: parts.append(f"{amount_ton * rub:.2f} RUB")
+    for cur in ("usd", "eur", "rub"):
+        if cur not in currencies:
+            continue
+        rate = rates.get(cur.upper(), 0.0)
+        if rate:
+            parts.append(f"{amount_ton * rate:.2f} {cur.upper()}")
 
     return f"({ ' | '.join(parts) })" if parts else ""
 
@@ -134,13 +152,15 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
     user_id = wallet["user_id"]
     raw_address = wallet["raw_address"]
     user_address = wallet["user_address"]
+    wallet_label = (wallet.get("label") or "").strip()
+    display_name = wallet_label or short_addr(user_address)
     last_event_id = wallet.get("last_event_id")
     last_event_ts = int(wallet.get("last_event_ts") or 0)
     stored_balance = float(wallet.get("last_balance") or 0.0)
     user_key = wallet.get("custom_api_key")
     min_in = float(wallet.get("min_incoming") or 0.0)
     min_out = float(wallet.get("min_outgoing") or 0.0)
-    
+    fiat_currencies = parse_fiat_currencies(wallet.get("fiat_currency"))
 
     events = await ton_client.get_events(raw_address, limit=10, api_key=user_key)
     if not events:
@@ -156,7 +176,26 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
         return
 
     if events[0]["event_id"] == last_event_id:
-        if abs(stored_balance - current_balance) > 1e-6:
+        diff = current_balance - stored_balance
+        if abs(diff) > 0.01:
+            # Баланс изменился, но новых событий нет: стейкинг, nominator pools,
+            # награды за валидацию и т.п.
+            diff_text = format_ton_diff(diff)
+            text = (
+                f"{E_SCALE} <b>Изменение баланса без транзакций</b>\n\n"
+                f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                f"{E_CHART} <b>Баланс:</b>\n"
+                f"  • <b>Было:</b> <code>{stored_balance:.4f} TON</code>\n"
+                f"  • <b>Стало:</b> <code>{current_balance:.4f} TON</code> ({diff_text})\n\n"
+                f"<i>Обычно это начисление стейкинга или награда пула номинаторов.</i>\n"
+                f"{E_LINK} <a href=\"https://tonviewer.com/{user_address}\">Tonviewer</a>"
+            )
+            try:
+                await bot.send_message(user_id, text, parse_mode="HTML", disable_web_page_preview=True)
+            except Exception as e:
+                logger.error(f"Ошибка отправки уведомления о дрифте баланса: {e}")
+            await db.update_watched_last_event_and_balance(wallet_id, last_event_id, current_balance, newest_ts)
+        elif abs(diff) > 1e-6:
             await db.update_watched_last_event_and_balance(wallet_id, last_event_id, current_balance, newest_ts)
         return
 
@@ -201,6 +240,9 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
     start_bal = stored_balance if stored_balance > 0 else max(0.0, current_balance - total_delta)
     running_balance = start_bal
 
+    # Курс запрашиваем один раз на проход, а не для каждой транзакции
+    rates = await ton_client.get_ton_rates(api_key=user_key) if fiat_currencies else {}
+
     for i, (ev, delta) in enumerate(zip(new_events, event_deltas)):
         b_before = running_balance
         if i == len(new_events) - 1 and current_balance > 0:
@@ -219,6 +261,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
         event_id = ev.get("event_id", "")
         actions = ev.get("actions", [])
         ts = ev.get("timestamp")
+        ts_int = int(ts) if ts else int(time.time())
         dt_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC") if ts else ""
         diff_text = format_ton_diff(eff_delta)
 
@@ -238,26 +281,25 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
 
                 is_in = recipient.lower() == raw_address.lower()
 
+                # Пишем в журнал до фильтров, чтобы обороты считались честно
+                await db.add_tx_log(user_id, wallet_id, ts_int, is_in, amount_ton, "ton", "TON", event_id)
+
                 if is_in and min_in > 0 and amount_ton < min_in:
                     continue #пропуск для входящего
                 if not is_in and min_out > 0 and amount_ton < min_out:
                     continue #пропуск для исходящего
-
-
 
                 icon = E_IN if is_in else E_OUT
                 tx_title = "Входящий перевод TON" if is_in else "Исходящий перевод TON"
                 party_label = "От кого" if is_in else "Кому"
                 party_addr = sender if is_in else recipient
 
-                fiat_mode = wallet.get("fiat_currency") or "usd_rub"
-                rates = await ton_client.get_ton_rates(api_key=user_key)
-                fiat_str = format_fiat_amount(amount_ton, rates, fiat_mode)
+                fiat_str = format_fiat_amount(amount_ton, rates, fiat_currencies)
                 fiat_display = f" <i>{fiat_str}</i>" if fiat_str else ""
 
                 text = (
                     f"{icon} <b>{tx_title}</b>\n\n"
-                    f"👀 <b>Вотч-лист:</b> <code>{short_addr(user_address)}</code>\n"
+                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
                     f"{E_TON} <b>Сумма:</b> <code>{amount_ton:.4f} TON</code>{fiat_display}\n"
                     f"{E_USER} <b>{party_label}:</b> <code>{short_addr(party_addr)}</code>\n"
                 )
@@ -312,6 +354,9 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
                 comment = transfer.get("comment", "")
 
                 is_in = recipient.lower() == raw_address.lower()
+
+                await db.add_tx_log(user_id, wallet_id, ts_int, is_in, amount, "jetton", symbol, event_id)
+
                 icon = E_IN if is_in else E_OUT
                 tx_title = f"Входящий перевод {symbol}" if is_in else f"Исходящий перевод {symbol}"
                 party_label = "От кого" if is_in else "Кому"
@@ -319,7 +364,7 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
 
                 text = (
                     f"{icon} <b>{tx_title}</b>\n\n"
-                    f"👀 <b>Вотч-лист:</b> <code>{short_addr(user_address)}</code>\n"
+                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
                     f"🪙 <b>Сумма:</b> <code>{amount:.4f} {symbol}</code>\n"
                     f"{E_USER} <b>{party_label}:</b> <code>{short_addr(party_addr)}</code>\n"
                 )
@@ -359,6 +404,96 @@ async def check_wallet_events(wallet: dict, bot: Bot, db: Database, ton_client: 
                         )
                 except Exception as e:
                     logger.error(f"Ошибка отправки Jetton уведомления: {e}")
+
+            elif act_type == "NftItemTransfer":
+                nft_data = act.get("NftItemTransfer", {})
+                nft_item = nft_data.get("nft", {}) or {}
+                nft_name = nft_item.get("name") or ""
+                nft_addr = nft_item.get("address", "")
+                sender = nft_data.get("sender", {}).get("address", "")
+                recipient = nft_data.get("recipient", {}).get("address", "")
+
+                is_in = recipient.lower() == raw_address.lower()
+                icon = E_IN if is_in else E_OUT
+                tx_title = "Входящий NFT-перевод" if is_in else "Исходящий NFT-перевод"
+                party_label = "От кого" if is_in else "Кому"
+                party_addr = sender if is_in else recipient
+                nft_display = html.escape(nft_name) if nft_name else short_addr(nft_addr)
+
+                text = (
+                    f"{E_NFT} <b>{tx_title}</b>\n\n"
+                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                    f"{E_NFT} <b>NFT:</b> <code>{nft_display}</code>\n"
+                    f"{E_USER} <b>{party_label}:</b> <code>{short_addr(party_addr)}</code>\n"
+                )
+                if dt_str:
+                    text += f"{E_TIME} <b>Время:</b> {dt_str}\n"
+                text += f"{E_LINK} <a href=\"https://tonviewer.com/transaction/{event_id}\">Tonviewer</a>"
+
+                try:
+                    await bot.send_message(user_id, text, parse_mode="HTML", disable_web_page_preview=True)
+                except Exception as e:
+                    logger.error(f"Ошибка отправки NFT уведомления: {e}")
+
+            elif act_type in ("DepositStake", "WithdrawStake"):
+                stake_data = act.get(act_type, {})
+                amount_ton = int(stake_data.get("amount", 0)) / 10**9
+                staker = stake_data.get("staker", {}).get("address", "")
+
+                if amount_ton <= 0:
+                    continue
+
+                is_in = act_type == "WithdrawStake"
+                tx_title = "Вывод из стейкинга" if is_in else "Пополнение стейкинга"
+                icon = E_IN if is_in else E_OUT
+
+                await db.add_tx_log(user_id, wallet_id, ts_int, is_in, amount_ton, "stake", "TON", event_id)
+
+                text = (
+                    f"{E_STAKE} <b>{tx_title}</b>\n\n"
+                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                    f"{E_TON} <b>Сумма:</b> <code>{amount_ton:.4f} TON</code>\n"
+                )
+                if staker:
+                    text += f"{E_USER} <b>Стейкер:</b> <code>{short_addr(staker)}</code>\n"
+                if dt_str:
+                    text += f"{E_TIME} <b>Время:</b> {dt_str}\n"
+                text += f"{E_LINK} <a href=\"https://tonviewer.com/transaction/{event_id}\">Tonviewer</a>"
+
+                try:
+                    await bot.send_message(user_id, text, parse_mode="HTML", disable_web_page_preview=True)
+                except Exception as e:
+                    logger.error(f"Ошибка отправки уведомления о стейкинге: {e}")
+
+            elif act_type == "SmartContractExec":
+                sce = act.get("SmartContractExec", {})
+                ton_attached = int(sce.get("ton_attached", 0)) / 10**9
+                executor = sce.get("executor", {}).get("address", "")
+                contract = sce.get("contract", {}).get("address", "")
+                operation = sce.get("operation", "")
+
+                # Уведомляем, только если вотч-кошелек — инициатор или контракт
+                if executor.lower() != raw_address.lower() and contract.lower() != raw_address.lower():
+                    continue
+
+                text = (
+                    f"{E_GEAR} <b>Вызов смарт-контракта</b>\n\n"
+                    f"👀 <b>Вотч-лист:</b> <code>{display_name}</code>\n"
+                    f"{E_USER} <b>Инициатор:</b> <code>{short_addr(executor)}</code>\n"
+                    f"{E_GEAR} <b>Контракт:</b> <code>{short_addr(contract)}</code>\n"
+                )
+                if operation:
+                    text += f"🔧 <b>Операция:</b> <code>{html.escape(str(operation))}</code>\n"
+                if ton_attached > 0:
+                    text += f"{E_TON} <b>Приложено:</b> <code>{ton_attached:.4f} TON</code>\n"
+                if dt_str:
+                    text += f"{E_TIME} <b>Время:</b> {dt_str}\n"
+                text += f"{E_LINK} <a href=\"https://tonviewer.com/transaction/{event_id}\">Tonviewer</a>"
+
+                try:
+                    await bot.send_message(user_id, text, parse_mode="HTML", disable_web_page_preview=True)
+                except Exception as e:
+                    logger.error(f"Ошибка отправки уведомления о вызове контракта: {e}")
 
     await db.update_watched_last_event_and_balance(wallet_id, events[0]["event_id"], current_balance, newest_ts)
 
